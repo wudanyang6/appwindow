@@ -50,6 +50,7 @@ final class SwitchPanel {
         let shownCount = min(PanelMetrics.maxListRows(), items.count)
         let clipHeight = CGFloat(shownCount) * PanelMetrics.rowHeight
         let contentHeight = CGFloat(items.count) * PanelMetrics.rowHeight
+        let hoverGate = MouseHoverGate()
 
         for screen in NSScreen.screens {
             let panel = NonKeyPanel(contentRect: .zero,
@@ -58,9 +59,10 @@ final class SwitchPanel {
                                     defer: false)
             configure(panel)
 
-            let (content, rows, scrollContent, arrows) = buildScreenContent(
+            let (_, rows, scrollContent, arrows) = buildScreenContent(
                 screen: screen, panel: panel, items: items, appIcon: appIcon,
-                clipHeight: clipHeight, contentHeight: contentHeight, onHover: onHover
+                clipHeight: clipHeight, contentHeight: contentHeight,
+                hoverGate: hoverGate, onHover: onHover
             )
 
             panels.append(panel)
@@ -123,6 +125,7 @@ private extension SwitchPanel {
     private func buildScreenContent(screen: NSScreen, panel: NonKeyPanel,
                                     items: [WindowItem], appIcon: NSImage?,
                                     clipHeight: CGFloat, contentHeight: CGFloat,
+                                    hoverGate: MouseHoverGate,
                                     onHover: @escaping (Int) -> Void)
         -> (content: NSView, rows: [WindowRowView], scrollContent: NSView,
             arrows: (up: NSImageView, down: NSImageView)) {
@@ -161,7 +164,7 @@ private extension SwitchPanel {
         var rows: [WindowRowView] = []
         for (index, item) in items.enumerated() {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
-                                    width: rowWidth,
+                                    width: rowWidth, hoverGate: hoverGate,
                                     onHover: { [weak self] index in
                                         self?.select(index: index)
                                         onHover(index)
@@ -215,12 +218,15 @@ final class WindowRowView: NSView {
 
     private let index: Int
     private let titleLabel = NSTextField(labelWithString: "")
+    private let hoverGate: MouseHoverGate
     private let onHover: (Int) -> Void
     private let onClick: (Int) -> Void
 
     init(index: Int, icon: NSImage?, title: String, width: CGFloat,
+         hoverGate: MouseHoverGate,
          onHover: @escaping (Int) -> Void, onClick: @escaping (Int) -> Void) {
         self.index = index
+        self.hoverGate = hoverGate
         self.onHover = onHover
         self.onClick = onClick
         super.init(frame: .zero)
@@ -272,11 +278,21 @@ final class WindowRowView: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeAlways],
+                                       options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
                                        owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
+        handleHover(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        handleHover(event)
+    }
+
+    private func handleHover(_ event: NSEvent) {
+        guard let window,
+              hoverGate.hasMoved(inWindow: event.locationInWindow, of: window) else { return }
         onHover(index)
     }
 }

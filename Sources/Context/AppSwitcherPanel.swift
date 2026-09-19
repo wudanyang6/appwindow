@@ -40,6 +40,7 @@ final class AppSwitcherPanel {
     private var onPickWindow: ((Int) -> Void)?
     private var onHoverWindow: ((Int) -> Void)?
     private var onScrollApp: ((Int) -> Void)?
+    private var hoverGate: MouseHoverGate?
 
     func show(apps: [SwitcherApp], appIndex: Int, windows: [WindowItem], windowIndex: Int,
               onPickApp: @escaping (Int) -> Void,
@@ -58,6 +59,7 @@ final class AppSwitcherPanel {
         self.onPickWindow = onPickWindow
         self.onHoverWindow = onHoverWindow
         self.onScrollApp = onScrollApp
+        hoverGate = MouseHoverGate()
 
         for _ in NSScreen.screens {
             let iconPanel = NonKeyPanel(contentRect: .zero,
@@ -114,6 +116,7 @@ final class AppSwitcherPanel {
         onPickWindow = nil
         onHoverWindow = nil
         onScrollApp = nil
+        hoverGate = nil
     }
 }
 
@@ -161,7 +164,7 @@ private extension AppSwitcherPanel {
     }
 
     private func render() {
-        guard !iconPanels.isEmpty else { return }
+        guard !iconPanels.isEmpty, let hoverGate else { return }
 
         let total = currentWindows.count
         let shownCount = min(SwitcherMetrics.maxListRows, total)
@@ -175,13 +178,14 @@ private extension AppSwitcherPanel {
         for (screenIndex, screen) in NSScreen.screens.enumerated() {
             guard screenIndex < iconPanels.count, screenIndex < listPanels.count else { continue }
 
-            let (highlightedCenter, iconPanelBottom) = renderIconPanel(on: screen, panel: iconPanels[screenIndex])
+            let (highlightedCenter, iconPanelBottom) = renderIconPanel(
+                on: screen, panel: iconPanels[screenIndex], hoverGate: hoverGate)
 
             if let (rows, content, arrows) = renderListPanel(
                 on: screen, panel: listPanels[screenIndex],
                 topY: iconPanelBottom,
                 clipHeight: clipHeight, contentHeight: contentHeight,
-                highlightedCenter: highlightedCenter
+                highlightedCenter: highlightedCenter, hoverGate: hoverGate
             ) {
                 allRows.append(rows)
                 scrollContents.append(content)
@@ -198,7 +202,8 @@ private extension AppSwitcherPanel {
     }
 
     /// 渲染图标主面板，各屏按自身尺寸布局；返回高亮图标中心横坐标与面板底部 y（该屏坐标系）
-    private func renderIconPanel(on screen: NSScreen, panel: NonKeyPanel) -> (highlightedCenter: CGFloat, bottomY: CGFloat) {
+    private func renderIconPanel(on screen: NSScreen, panel: NonKeyPanel,
+                                 hoverGate: MouseHoverGate) -> (highlightedCenter: CGFloat, bottomY: CGFloat) {
         let visibleFrame = screen.visibleFrame
 
         // 单行布局：图标大小随应用数量缩放；达到上限后不再放大，
@@ -216,6 +221,7 @@ private extension AppSwitcherPanel {
         for (index, app) in apps.enumerated() {
             let slotView = IconSlotView(index: index, icon: app.icon,
                                         iconSize: slot, slotSize: slot,
+                                        hoverGate: hoverGate,
                                         onHover: { [weak self] in self?.onHoverApp?($0) },
                                         onClick: { [weak self] in self?.onPickApp?($0) })
             slotView.frame = NSRect(x: SwitcherMetrics.edgeInset + CGFloat(index) * slot,
@@ -240,7 +246,7 @@ private extension AppSwitcherPanel {
     private func renderListPanel(on screen: NSScreen, panel: NonKeyPanel,
                                  topY: CGFloat,
                                  clipHeight: CGFloat, contentHeight: CGFloat,
-                                 highlightedCenter: CGFloat)
+                                 highlightedCenter: CGFloat, hoverGate: MouseHoverGate)
         -> (rows: [WindowRowView], scrollContent: NSView,
             arrows: (up: NSImageView, down: NSImageView))? {
 
@@ -275,7 +281,7 @@ private extension AppSwitcherPanel {
         var rows: [WindowRowView] = []
         for (index, item) in currentWindows.enumerated() {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
-                                    width: listWidth,
+                                    width: listWidth, hoverGate: hoverGate,
                                     onHover: { [weak self] in self?.onHoverWindow?($0) },
                                     onClick: { [weak self] in self?.onPickWindow?($0) })
             row.frame = NSRect(x: 0,
@@ -322,13 +328,16 @@ private extension AppSwitcherPanel {
 private final class IconSlotView: NSView {
 
     private let index: Int
+    private let hoverGate: MouseHoverGate
     private let onHover: (Int) -> Void
     private let onClick: (Int) -> Void
 
     init(index: Int, icon: NSImage?, iconSize: CGFloat, slotSize: CGFloat,
+         hoverGate: MouseHoverGate,
          onHover: @escaping (Int) -> Void,
          onClick: @escaping (Int) -> Void) {
         self.index = index
+        self.hoverGate = hoverGate
         self.onHover = onHover
         self.onClick = onClick
         super.init(frame: .zero)
@@ -365,11 +374,21 @@ private final class IconSlotView: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeAlways],
+                                       options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
                                        owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
+        handleHover(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        handleHover(event)
+    }
+
+    private func handleHover(_ event: NSEvent) {
+        guard let window,
+              hoverGate.hasMoved(inWindow: event.locationInWindow, of: window) else { return }
         onHover(index)
     }
 
