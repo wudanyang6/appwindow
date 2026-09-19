@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AppWindow — macOS 窗口切换器</title>
+<style>
+  :root {
+    --accent: #4a6bf0;
+    --accent-deep: #6d4df5;
+    --text: #1d2129;
+    --text-secondary: #4e5969;
+    --text-tertiary: #86909c;
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --border: #e5e6eb;
+    --code-bg: #f2f3f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --text: #e8eaef;
+      --text-secondary: #a9b0bd;
+      --text-tertiary: #6b7280;
+      --bg: #17181c;
+      --card: #212227;
+      --border: #33343a;
+      --code-bg: #2a2b31;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 72px 24px 56px;
+    background: linear-gradient(160deg, rgba(74,107,240,.10), rgba(109,77,245,.08) 60%, transparent);
+  }
+  .hero img {
+    width: 128px; height: 128px;
+    border-radius: 28px;
+    box-shadow: 0 12px 40px rgba(74,107,240,.30);
+  }
+  .hero h1 { font-size: 34px; margin-top: 24px; letter-spacing: -.5px; }
+  .hero p.sub { font-size: 17px; color: var(--text-secondary); margin-top: 8px; }
+  .hero .badges { margin-top: 14px; font-size: 13px; color: var(--text-tertiary); }
+  .hero .badges span { margin: 0 8px; }
+
+  .actions { margin-top: 32px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block;
+    padding: 13px 30px;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn-primary {
+    color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+    box-shadow: 0 8px 24px rgba(74,107,240,.35);
+  }
+  .btn-ghost {
+    color: var(--text);
+    border: 1.5px solid var(--border);
+    background: var(--card);
+  }
+  .btn small { display: block; font-size: 12px; font-weight: 400; opacity: .8; }
+
+  .demo-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 24px;
+    margin-top: 8px;
+  }
+  .demo-item img {
+    width: 100%;
+    display: block;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 28px rgba(0,0,0,.14);
+  }
+  .demo-item figcaption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+  @media (min-width: 760px) {
+    .demo-grid { grid-template-columns: 1.5fr 1fr; align-items: start; }
+  }
+
+  /* Sections */
+  section { padding: 48px 0; }
+  h2 { font-size: 22px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+  h2::before { content: ""; width: 4px; height: 20px; border-radius: 2px; background: linear-gradient(var(--accent), var(--accent-deep)); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+  }
+  .card h3 { font-size: 17px; margin-bottom: 10px; }
+  .card p { font-size: 14px; color: var(--text-secondary); }
+
+  kbd {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    background: var(--code-bg);
+    font-family: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-tertiary); font-weight: 500; font-size: 13px; }
+  td:first-child { white-space: nowrap; }
+
+  ol.steps { padding-left: 0; list-style: none; counter-reset: step; }
+  ol.steps li {
+    counter-increment: step;
+    position: relative;
+    padding: 14px 0 14px 52px;
+    border-bottom: 1px solid var(--border);
+    font-size: 15px;
+  }
+  ol.steps li:last-child { border-bottom: none; }
+  ol.steps li::before {
+    content: counter(step);
+    position: absolute; left: 0; top: 12px;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+    color: #fff;
+    font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+  }
+  ol.steps li small { display: block; color: var(--text-tertiary); font-size: 13px; margin-top: 2px; }
+
+  .note {
+    margin-top: 16px;
+    padding: 14px 18px;
+    border-radius: 12px;
+    background: var(--code-bg);
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  footer {
+    margin-top: 24px;
+    padding: 32px 0 48px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="icon.png" alt="AppWindow 图标">
+  <h1>AppWindow</h1>
+  <p class="sub">把 macOS 的 <kbd>Cmd</kbd>+<kbd>Tab</kbd> 与 <kbd>Cmd</kbd>+<kbd>`</kbd> 变成可见、可预览、可鼠标参与的选择面板</p>
+  <div class="badges">
+    <span>macOS 14+</span><span>·</span><span>Apple Silicon / Intel</span><span>·</span><span>GPL-3.0 开源</span>
+  </div>
+  <div class="actions">
+    <a class="btn btn-primary" href="https://github.com/wudanyang6/appwindow/releases/download/v0.1.0/AppWindow-0.1.0.dmg">
+      下载 DMG 安装包<small>v0.1.0 · 约 1.1 MB</small>
+    </a>
+    <a class="btn btn-ghost" href="https://github.com/wudanyang6/appwindow">GitHub 源码</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section>
+    <h2>界面演示</h2>
+    <div class="demo-grid">
+      <figure class="demo-item">
+        <img src="demo-cmd-tab.png" alt="Cmd+Tab 应用切换器" loading="lazy">
+        <figcaption><kbd>Cmd</kbd>+<kbd>Tab</kbd> 应用切换器——图标面板下方直接展开高亮应用的窗口列表</figcaption>
+      </figure>
+      <figure class="demo-item">
+        <img src="demo-cmd-grave.png" alt="Cmd+` 窗口切换器" loading="lazy">
+        <figcaption><kbd>Cmd</kbd>+<kbd>`</kbd> 窗口切换器——当前应用的全部窗口，松开即切换</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>两种切换器</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Cmd + Tab · 应用切换器</h3>
+        <p>横向图标面板（尺寸贴近原生），高亮应用下方直接展开其窗口列表——选好应用的同时选好窗口，松开 Cmd 直达。</p>
+        <table style="margin-top:12px">
+          <tr><th>按键</th><th>作用</th></tr>
+          <tr><td><kbd>Tab</kbd> / <kbd>→</kbd></td><td>下一个应用</td></tr>
+          <tr><td><kbd>Shift</kbd>+<kbd>Tab</kbd> / <kbd>←</kbd> / <kbd>`</kbd></td><td>上一个应用</td></tr>
+          <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>选当前应用的窗口</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Cmd + ` · 窗口切换器</h3>
+        <p>当前应用的全部窗口列表（高度约为屏幕 70%），默认高亮下一个窗口，与系统习惯一致。</p>
+        <table style="margin-top:12px">
+          <tr><th>按键</th><th>作用</th></tr>
+          <tr><td><kbd>`</kbd></td><td>向下循环选择</td></tr>
+          <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>上下移动</td></tr>
+          <tr><td>松开 <kbd>Cmd</kbd></td><td>切换到高亮窗口</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>为效率而生</h2>
+    <div class="grid">
+      <div class="card"><h3>🖱 完整鼠标交互</h3><p>悬停即高亮、点击即切换；图标区滚轮切换应用，窗口列表滚轮连续滚动浏览。</p></div>
+      <div class="card"><h3>🖥 多屏同步显示</h3><p>每个屏幕同时显示一份面板，高亮与滚动状态跨屏实时同步，视线不用跨屏移动。</p></div>
+      <div class="card"><h3>🌗 跟随系统外观</h3><p>深色 / 浅色模式自动适配，半透明毛玻璃背景，与系统风格融为一体。</p></div>
+      <div class="card"><h3>⚡ 不抢焦点</h3><p>面板为非激活窗口，全程不抢占键盘焦点；按 <kbd>Esc</kbd> 或点击面板外任意位置即可取消。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>安装步骤</h2>
+    <div class="card">
+      <ol class="steps">
+        <li>下载并打开 DMG，将 AppWindow 拖入 Applications 文件夹<small>若被 Gatekeeper 拦截，右键 AppWindow → 打开</small></li>
+        <li>启动后授权「辅助功能」权限<small>菜单栏图标 → 打开系统设置 → 隐私与安全性 → 辅助功能，勾选 AppWindow</small></li>
+        <li>按 <kbd>Cmd</kbd>+<kbd>Tab</kbd> 或 <kbd>Cmd</kbd>+<kbd>`</kbd> 开始使用</li>
+      </ol>
+      <div class="note">提示：AppWindow 需要辅助功能权限来监听快捷键与切换窗口，仅使用 Accessibility API 读取窗口标题，无需屏幕录制权限。</div>
+    </div>
+  </section>
+
+  <footer>
+    AppWindow · 以 <a href="https://github.com/wudanyang6/appwindow/blob/main/LICENSE">GPL-3.0</a> 协议开源 ·
+    <a href="https://github.com/wudanyang6/appwindow/releases">全部版本</a>
+  </footer>
+
+</div>
+
+</body>
+</html>
