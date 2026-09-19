@@ -4,15 +4,15 @@
     {
       "slug": "appwindow-macos",
       "title": "AppWindow — macOS 窗口切换器",
-      "base": "popo-page",
+      "base": "docs",
       "entry": "index.html",
       "glob": [
         "**/*"
       ],
       "exclude": [],
-      "lastDeployedAt": "2026-09-19T05:04:02.398621+00:00",
+      "lastDeployedAt": "2026-09-19T05:18:45.277477+00:00",
       "workId": 21811,
-      "baseVersionNo": 2
+      "baseVersionNo": 9
     }
   ]
 }
