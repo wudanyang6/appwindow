@@ -1,5 +1,7 @@
 # AppWindow
 
+**[→ 在线介绍页](https://wudanyang6.github.io/appwindow/)**
+
 一个只做一件事的 macOS 窗口切换器：用更顺手的方式在**应用**与**窗口**之间切换。灵感来自 [Contexts](https://contexts.co/)，只保留并增强了它最核心的两个快捷键——`Cmd+\`` 与 `Cmd+Tab`。
 
 原生 `Cmd+Tab` 切换应用时看不到窗口、只能逐个循环；原生 Cmd+` 在应用内切窗口同样是一步步试。AppWindow 把这两件事变成**可见、可预览、可鼠标参与**的选择面板。
