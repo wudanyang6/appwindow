@@ -48,8 +48,15 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-echo "==> codesign (AppWindowDev 固定身份, TCC 授权跨构建稳定)"
-codesign --force --sign "AppWindowDev" "$APP"
+# CI 环境没有本地自签身份（AppWindowDev 只在本机钥匙串），沿用历史 CI 的 ad-hoc 签名；
+# 本地保持 AppWindowDev 固定身份，TCC 授权跨构建稳定
+if [ "${CI:-}" = "true" ]; then
+    echo "==> codesign (ad-hoc, CI)"
+    codesign --force --sign - "$APP"
+else
+    echo "==> codesign (AppWindowDev 固定身份, TCC 授权跨构建稳定)"
+    codesign --force --sign "AppWindowDev" "$APP"
+fi
 
 echo
 

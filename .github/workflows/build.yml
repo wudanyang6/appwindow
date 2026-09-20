@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    # NSGlassEffectView 需要 macOS 26 SDK 编译；macos-14 镜像 SDK 太旧
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
