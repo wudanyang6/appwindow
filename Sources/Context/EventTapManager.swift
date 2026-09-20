@@ -29,6 +29,9 @@ final class EventTapManager {
     private var appIndex = 0
     private var windowIndex = 0
 
+    // app 激活顺序（MRU，最近在前）；已退出 app 的残留 pid 在排序时匹配不到，自然跳过
+    private var appMRU: [pid_t] = []
+
     private var timeoutWork: DispatchWorkItem?
     private var outsideClickMonitor: Any?
 
@@ -37,13 +40,23 @@ final class EventTapManager {
     init(panel: SwitchPanel) {
         self.windowPanel = panel
 
-        // 选择过程中用户用鼠标切走了目标应用，面板失去意义，立即收起
-        NotificationCenter.default.addObserver(
+        // z-order 只是使用顺序的近似（app 激活对它的更新带“交换”语义），
+        // MRU 以 z-order 播种，此后每次激活冒泡修正
+        appMRU = WindowListService.switcherApps().map(\.app.processIdentifier)
+
+        // 选择过程中用户用鼠标切走了目标应用，面板失去意义，立即收起；
+        // 同时维护 app 激活顺序（MRU）。workspace 通知发布在 NSWorkspace 自己的
+        // notificationCenter，注册到 NotificationCenter.default 会永远收不到
+        NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            guard let self, self.mode != nil else { return }
+        ) { [weak self] notification in
+            guard let self else { return }
+            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                self.noteAppActivation(app.processIdentifier)
+            }
+            guard self.mode != nil else { return }
             let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             // apps 模式没有固定的目标应用（targetApp 为 nil），用户主动切走即取消
             if frontPID != self.targetApp?.processIdentifier {
@@ -252,7 +265,7 @@ private extension EventTapManager {
     private func beginAppSwitching(reverse: Bool) -> Bool {
         guard mode == nil else { return true }
 
-        var apps = WindowListService.switcherApps()
+        var apps = mruOrdered(WindowListService.switcherApps())
         if let frontmost = NSWorkspace.shared.frontmostApplication {
             ensureFrontmostFirst(&apps, frontmost: frontmost)
         }
@@ -291,6 +304,26 @@ private extension EventTapManager {
         } else if !apps.contains(where: { $0.app.processIdentifier == frontPID }) {
             apps.insert(SwitcherApp(app: frontmost), at: 0)
         }
+    }
+
+    /// 激活即最近使用：pid 冒泡到 MRU 最前
+    private func noteAppActivation(_ pid: pid_t) {
+        appMRU.removeAll { $0 == pid }
+        appMRU.insert(pid, at: 0)
+    }
+
+    /// 按 MRU 重排应用列表；未进入 MRU 的应用（本会话未激活过）按 z-order 原序附在后面
+    private func mruOrdered(_ apps: [SwitcherApp]) -> [SwitcherApp] {
+        guard !appMRU.isEmpty else { return apps }
+        var picked = Set<pid_t>()
+        var ordered: [SwitcherApp] = []
+        for pid in appMRU {
+            if let app = apps.first(where: { $0.app.processIdentifier == pid }) {
+                ordered.append(app)
+                picked.insert(pid)
+            }
+        }
+        return ordered + apps.filter { !picked.contains($0.app.processIdentifier) }
     }
 
     // MARK: apps 模式操作
