@@ -8,10 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var eventTapManager = EventTapManager(panel: panel)
     private var permissionTimer: Timer?
     private var isTapRunning = false
+    private var updateChecker: UpdateChecker?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         initializeAccess()
+        setupUpdateChecker()
     }
 
     // MARK: - 状态栏
@@ -27,6 +29,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+
+        // 更新检查：idle 显示检查入口，出结果后显示版本状态
+        let updateItem: NSMenuItem
+        switch updateChecker?.state {
+        case .available(let latest):
+            updateItem = NSMenuItem(
+                title: "有新版本 \(latest) 可用",
+                action: #selector(openReleasePage),
+                keyEquivalent: ""
+            )
+            updateItem.target = self
+        case .upToDate(let current):
+            updateItem = NSMenuItem(
+                title: "已是最新版本 (\(current))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            updateItem.isEnabled = false
+        default:
+            updateItem = NSMenuItem(
+                title: "检查更新…",
+                action: #selector(checkForUpdates),
+                keyEquivalent: ""
+            )
+            updateItem.target = self
+        }
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
 
         let status = NSMenuItem(
             title: isTapRunning ? "✓ 辅助功能权限已授权" : "✗ 缺少辅助功能权限",
@@ -77,6 +107,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 主动弹出系统授权请求对话框（用户此前拒绝后，系统不会再自动弹）
     @objc private func requestAccess() {
         promptForAccess()
+    }
+
+    // MARK: - 更新检测
+
+    private func setupUpdateChecker() {
+        let checker = UpdateChecker()
+        checker.onStateChanged = { [weak self] in
+            self?.statusItem?.menu = self?.buildMenu()
+        }
+        updateChecker = checker
+        // 延迟数秒启动检测，避免挤占应用启动
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak checker] in
+            checker?.start()
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        updateChecker?.checkNow()
+    }
+
+    @objc private func openReleasePage() {
+        updateChecker?.openReleasePage()
     }
 
     // MARK: - 权限
