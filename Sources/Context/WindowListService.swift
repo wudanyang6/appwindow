@@ -5,6 +5,10 @@ struct WindowItem {
     let axWindow: AXUIElement
     let title: String
     let isMinimized: Bool
+    // 窗口级 MRU 的匹配 key；私有 API 不可用时为 nil，MRU 自动退化为纯 z-order
+    let cgWindowID: CGWindowID?
+    // 在当前 Space 的 CG 可见列表中匹配成功（未最小化且不在其他 Space）
+    let isOnScreen: Bool
 }
 
 /// cmd+tab 切换器中的一个应用条目，windows 惰性加载（首次高亮时才枚举）
@@ -56,13 +60,11 @@ enum WindowListService {
         let fallbackTitle = app.localizedName ?? "Window"
         let visible = visibleWindows(pid: app.processIdentifier)
 
-        var entries = axWindows.enumerated().map { index, ax -> Entry in
+        var entries: [Entry] = axWindows.enumerated().map { index, ax -> Entry in
             Entry(
-                item: WindowItem(
-                    axWindow: ax,
-                    title: title(of: ax, fallback: fallbackTitle, index: index),
-                    isMinimized: ax.isMinimized
-                ),
+                axWindow: ax,
+                title: title(of: ax, fallback: fallbackTitle, index: index),
+                isMinimized: ax.isMinimized,
                 cgWindowID: ax.cgWindowID,
                 bounds: CGRect(origin: ax.position ?? .zero, size: ax.size ?? .zero)
             )
@@ -83,11 +85,21 @@ enum WindowListService {
 
         entries.sort { rank($0) < rank($1) }
         // 不截断：选择面板的视口 + 滚动机制可承载任意行数
-        return entries.map(\.item)
+        return entries.map { entry in
+            WindowItem(
+                axWindow: entry.axWindow,
+                title: entry.title,
+                isMinimized: entry.isMinimized,
+                cgWindowID: entry.cgWindowID,
+                isOnScreen: rank(entry) != Int.max
+            )
+        }
     }
 
     private struct Entry {
-        let item: WindowItem
+        let axWindow: AXUIElement
+        let title: String
+        let isMinimized: Bool
         let cgWindowID: CGWindowID?
         let bounds: CGRect
     }
@@ -96,8 +108,19 @@ enum WindowListService {
         "\(rect.origin.x),\(rect.origin.y),\(rect.size.width),\(rect.size.height)"
     }
 
-    /// 全部应用的可见窗口，z-order 排列（最前在最前）
-    private static func allVisibleWindows() -> [(id: CGWindowID, bounds: CGRect, pid: pid_t)] {
+    /// 诊断日志用：全局可见窗口的 z 序快照（app 名 + windowID；读窗口标题需要
+    /// 屏幕录制权限，本工具没有，故只记 ID——与 activate 日志里的窗口 ID 对得上）
+    static func diagnosticZOrder(limit: Int = 12) -> String {
+        let byPID = Dictionary(uniqueKeysWithValues:
+            NSWorkspace.shared.runningApplications
+                .map { ($0.processIdentifier, $0.localizedName ?? "?") })
+        let names = allVisibleWindows().prefix(limit)
+            .map { "\(byPID[$0.pid] ?? "?")/\($0.id)" }
+        return names.joined(separator: " ")
+    }
+
+    /// 全部应用的可见窗口，z-order 排列（最前在最前）；诊断日志的 z 序快照复用
+    static func allVisibleWindows() -> [(id: CGWindowID, bounds: CGRect, pid: pid_t)] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -114,7 +137,9 @@ enum WindowListService {
         }
     }
 
-    private static func visibleWindows(pid: pid_t) -> [(id: CGWindowID, bounds: CGRect)] {
+    /// 指定 app 在当前 Space 的可见窗口，z-order 排列（最前在最前）；
+    /// WindowMRUTracker 失活快照复用它推导窗口使用序
+    static func visibleWindows(pid: pid_t) -> [(id: CGWindowID, bounds: CGRect)] {
         allVisibleWindows()
             .filter { $0.pid == pid }
             .map { ($0.id, $0.bounds) }

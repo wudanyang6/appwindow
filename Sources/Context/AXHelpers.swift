@@ -21,6 +21,12 @@ extension AXUIElement {
         copyAttribute(kAXWindowsAttribute) as? [AXUIElement] ?? []
     }
 
+    /// app 当前焦点窗口；属性查询失败返回 nil，成功时值必为 AXUIElement（强制桥接）
+    var focusedWindow: AXUIElement? {
+        guard let value = copyAttribute(kAXFocusedWindowAttribute) else { return nil }
+        return (value as! AXUIElement)
+    }
+
     var title: String? {
         guard let title = copyAttribute(kAXTitleAttribute) as? String, !title.isEmpty else { return nil }
         return title

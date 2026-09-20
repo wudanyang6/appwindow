@@ -48,10 +48,23 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-echo "==> codesign (ad-hoc)"
-codesign --force --sign - "$APP"
+echo "==> codesign (AppWindowDev 固定身份, TCC 授权跨构建稳定)"
+codesign --force --sign "AppWindowDev" "$APP"
 
 echo
+
+# 已有系统安装时替换为新构建并重启（保持日常使用入口不变）
+if [ -d "/Applications/AppWindow.app" ]; then
+    # 按可执行文件名匹配杀掉所有实例（含 build 目录手动 open 的旧实例），
+    # 只按 /Applications 路径匹配会漏杀后者，造成双实例同时挂 EventTap
+    pkill -f "AppWindow.app/Contents/MacOS/AppWindow" 2>/dev/null || true
+    sleep 1
+    rm -rf /Applications/AppWindow.app
+    cp -R "$APP" /Applications/AppWindow.app
+    open /Applications/AppWindow.app
+    echo "✓ 已安装到 /Applications 并重启"
+fi
+
 echo "✓ 构建完成: $APP"
 echo "  运行: open \"$APP\""
 echo "  首次运行需在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 AppWindow"

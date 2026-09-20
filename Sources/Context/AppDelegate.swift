@@ -85,6 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // 排查工具：默认关闭，开启后写 ~/Library/Logs/AppWindow.log 供问题定位
+        let diagLog = NSMenuItem(
+            title: "诊断日志",
+            action: #selector(toggleDiagLog(_:)),
+            keyEquivalent: ""
+        )
+        diagLog.target = self
+        diagLog.state = DiagLog.isEnabled ? .on : .off
+        menu.addItem(diagLog)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
@@ -102,6 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// 菜单打开状态下切换 state 即实时生效；持久化由 DiagLog.isEnabled 的 setter 完成
+    @objc private func toggleDiagLog(_ item: NSMenuItem) {
+        DiagLog.isEnabled.toggle()
+        item.state = DiagLog.isEnabled ? .on : .off
     }
 
     /// 主动弹出系统授权请求对话框（用户此前拒绝后，系统不会再自动弹）

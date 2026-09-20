@@ -5,7 +5,8 @@ private enum PanelMetrics {
     static let width: CGFloat = 520
     static let rowHeight: CGFloat = 34
     static let edgeInset: CGFloat = 8
-    static let cornerRadius: CGFloat = 18
+    // 与 cmd+tab 面板统一圆角
+    static let cornerRadius: CGFloat = 26
     // 面板高度目标：屏幕可视高度的 70%
     static let heightRatio: CGFloat = 0.70
 
@@ -57,6 +58,7 @@ final class SwitchPanel {
                                     styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered,
                                     defer: false)
+            panel.identifier = NSUserInterfaceItemIdentifier("switch-\(panels.count)")
             configure(panel)
 
             let (_, rows, scrollContent, arrows) = buildScreenContent(
@@ -79,6 +81,11 @@ final class SwitchPanel {
         updateScrollArrows()
 
         panels.forEach { $0.orderFrontRegardless() }
+        // 首屏面板成 key 使玻璃呈聚焦样式（激活语义见 AppSwitcherPanel.show 的注释）
+        if let first = panels.first {
+            first.makeKeyAndOrderFront(nil)
+            DiagLog.log("panel", "switch makeKey: isKeyWindow=\(first.isKeyWindow) appActive=\(NSApp.isActive)")
+        }
     }
 
     func select(index: Int) {
@@ -141,16 +148,33 @@ private extension SwitchPanel {
         background.layer?.masksToBounds = true
         background.onScrollRaw = { [weak self] in self?.listScroller.scroll(by: $0) }
 
-        // 毛玻璃作为容器内的独立子层，透明度跟随全局设置（Theme），只淡化材质不淡化内容
-        let effect = NSVisualEffectView(frame: background.bounds)
-        effect.autoresizingMask = [.width, .height]
-        effect.material = .menu
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = PanelMetrics.cornerRadius
-        effect.alphaValue = Theme.backgroundAlpha
-        background.addSubview(effect)
+        // 背景层与 cmd+tab 图标行同款玻璃配置：毛玻璃打底提供模糊（alpha 控强度），
+        // clear 液态玻璃质感层在上，黑 tint 统一亮度
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView(frame: background.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.style = .clear
+            glass.cornerRadius = PanelMetrics.cornerRadius
+            glass.tintColor = NSColor.black.withAlphaComponent(0.15)
+            let blur = NSVisualEffectView(frame: background.bounds)
+            blur.autoresizingMask = [.width, .height]
+            blur.material = .menu
+            blur.blendingMode = .behindWindow
+            blur.state = .active
+            blur.alphaValue = 0.75
+            background.addSubview(blur, positioned: .below, relativeTo: glass)
+            background.addSubview(glass)
+        } else {
+            let effect = NSVisualEffectView(frame: background.bounds)
+            effect.autoresizingMask = [.width, .height]
+            effect.material = .menu
+            effect.blendingMode = .behindWindow
+            effect.state = .active
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = PanelMetrics.cornerRadius
+            effect.alphaValue = Theme.backgroundAlpha
+            background.addSubview(effect)
+        }
 
         // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行
         let clip = NSView(frame: NSRect(x: PanelMetrics.edgeInset, y: PanelMetrics.edgeInset,
@@ -210,8 +234,21 @@ private extension SwitchPanel {
 
 // MARK: - 共享子视图（AppSwitcherPanel 复用）
 
+/// nonactivating 面板：可成为 key window（驱动玻璃聚焦样式）但绝不激活 App、
+/// 不改变当前 active app；键盘事件仍由 EventTapManager 在事件 tap 层拦截驱动
 final class NonKeyPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
+
+    // key 状态流转打点：排查玻璃聚焦样式不生效时区分「没成为 key」与「成了 key 但玻璃不认」
+    override func becomeKey() {
+        super.becomeKey()
+        DiagLog.log("panel", "becomeKey id=\(identifier?.rawValue ?? "?") appActive=\(NSApp.isActive)")
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        DiagLog.log("panel", "resignKey id=\(identifier?.rawValue ?? "?") appActive=\(NSApp.isActive)")
+    }
 }
 
 final class WindowRowView: NSView {

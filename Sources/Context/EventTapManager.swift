@@ -32,6 +32,12 @@ final class EventTapManager {
     // app 激活顺序（MRU，最近在前）；已退出 app 的残留 pid 在排序时匹配不到，自然跳过
     private var appMRU: [pid_t] = []
 
+    // 窗口使用顺序（MRU）：app 失活快照维护，弥补 z-order 看不到跨 Space / 最小化窗口的顺序
+    private let windowMRU = WindowMRUTracker()
+
+    // dock 角标缓存（app 名 → 角标文字）：面板打开时先用缓存渲染，后台读 Dock 后更新
+    private var dockBadges: [String: String] = [:]
+
     private var timeoutWork: DispatchWorkItem?
     private var outsideClickMonitor: Any?
 
@@ -54,6 +60,7 @@ final class EventTapManager {
         ) { [weak self] notification in
             guard let self else { return }
             if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                DiagLog.log("app-activate", "\(app.localizedName ?? "?")(\(app.processIdentifier))")
                 self.noteAppActivation(app.processIdentifier)
             }
             guard self.mode != nil else { return }
@@ -62,6 +69,19 @@ final class EventTapManager {
             if frontPID != self.targetApp?.processIdentifier {
                 self.cancelSelection()
             }
+        }
+
+        // app 失活时刻的 focused + z 序正是「本次使用的最终状态」，快照进窗口 MRU；
+        // 前台期间用户内部切窗（cmd+`、鼠标点击）不触发任何 app 级通知，靠此处与取用时刷新兜住
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self.windowMRU.snapshot(app)
         }
     }
 
@@ -237,7 +257,7 @@ private extension EventTapManager {
         guard mode == nil,
               let app = NSWorkspace.shared.frontmostApplication else { return false }
 
-        let windows = WindowListService.windows(of: app)
+        let windows = currentWindows(for: app)
         guard !windows.isEmpty else { return false }
 
         mode = .windows
@@ -284,14 +304,40 @@ private extension EventTapManager {
             appIndex: appIndex,
             windows: switcherApps[appIndex].windows,
             windowIndex: windowIndex,
+            badges: switcherApps.map { dockBadges[$0.name] },
             onPickApp: { [weak self] in self?.pickApp(at: $0) },
             onHoverApp: { [weak self] in self?.hoverApp(at: $0) },
             onPickWindow: { [weak self] in self?.pickWindow(at: $0) },
             onHoverWindow: { [weak self] in self?.hoverWindow(at: $0) },
             onScrollApp: { [weak self] in self?.moveApp(by: $0) }
         )
+        refreshDockBadges()
         startOutsideClickMonitor()
         return true
+    }
+
+    /// 后台读 Dock 角标（AX 可跨线程，避免卡首按），主线程更新缓存与面板视图
+    private func refreshDockBadges() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let badges = DockBadgeService.badgeByTitle()
+            DispatchQueue.main.async {
+                guard let self, self.mode == .apps else { return }
+                self.dockBadges = badges
+                self.appPanel.updateBadges(self.switcherApps.map { badges[$0.name] })
+            }
+        }
+    }
+
+    /// 枚举 app 窗口并按窗口 MRU 排序；前台 app 的 MRU 可能过期（前台期间内部切窗无通知），
+    /// 先刷新快照对齐 z-order 的最新状态
+    private func currentWindows(for app: NSRunningApplication) -> [WindowItem] {
+        if app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            windowMRU.snapshot(app)
+        }
+        let windows = windowMRU.ordered(WindowListService.windows(of: app), pid: app.processIdentifier)
+        DiagLog.log("mru-order", "\(app.localizedName ?? "?"): "
+            + windows.map { "\"\($0.title)\"" }.joined(separator: " "))
+        return windows
     }
 
     /// 确保当前前台应用排第一位（CGWindowList 的 z-order 通常已保证，此处兜底）
@@ -353,7 +399,7 @@ private extension EventTapManager {
     /// 窗口列表惰性加载：只在应用首次被高亮时做 AX 枚举，保证首按 cmd+tab 的响应速度
     private func loadWindows(at index: Int) {
         guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else { return }
-        switcherApps[index].windows = WindowListService.windows(of: switcherApps[index].app)
+        switcherApps[index].windows = currentWindows(for: switcherApps[index].app)
         switcherApps[index].windowsLoaded = true
     }
 
@@ -422,6 +468,9 @@ private extension EventTapManager {
             }
             let item = items[selection]
             endSelection()
+            DiagLog.log("commit", "windows → \"\(item.title)\" idx=\(selection) id=\(item.cgWindowID.map(String.init) ?? "nil")")
+            // 目标窗口可能尚不可见（最小化/跨 Space），失活快照看不到，提交时立即记入 MRU
+            windowMRU.noteFocus(item, pid: app.processIdentifier)
             WindowActivator.activate(item, app: app)
 
         case .apps:
@@ -434,7 +483,11 @@ private extension EventTapManager {
                 ? target.windows[windowIndex]
                 : nil
             endSelection()
+            DiagLog.log("commit", "apps → \(target.name)(\(target.app.processIdentifier)) "
+                + "windowIdx=\(windowIndex) window=\"\(window?.title ?? "nil")\" "
+                + "id=\(window?.cgWindowID.map(String.init) ?? "nil")")
             if let window {
+                windowMRU.noteFocus(window, pid: target.app.processIdentifier)
                 WindowActivator.activate(window, app: target.app)
             } else {
                 target.app.activate()
