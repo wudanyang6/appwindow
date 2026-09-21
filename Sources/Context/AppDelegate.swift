@@ -85,6 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // 对齐系统 cmd+tab 的按住显示行为：快速点按直接切换，不闪面板
+        let delayedPanel = NSMenuItem(
+            title: "延迟显示面板（100ms）",
+            action: #selector(toggleDelayedPanel(_:)),
+            keyEquivalent: ""
+        )
+        delayedPanel.target = self
+        delayedPanel.state = Settings.delayedPanel ? .on : .off
+        menu.addItem(delayedPanel)
+
         // 排查工具：默认关闭，开启后写 ~/Library/Logs/AppWindow.log 供问题定位
         let diagLog = NSMenuItem(
             title: "诊断日志",
@@ -112,6 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// 菜单打开状态下切换 state 即实时生效；持久化由 Settings.delayedPanel 的 setter 完成
+    @objc private func toggleDelayedPanel(_ item: NSMenuItem) {
+        Settings.delayedPanel.toggle()
+        item.state = Settings.delayedPanel ? .on : .off
     }
 
     /// 菜单打开状态下切换 state 即实时生效；持久化由 DiagLog.isEnabled 的 setter 完成

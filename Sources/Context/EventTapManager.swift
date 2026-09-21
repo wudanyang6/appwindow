@@ -39,9 +39,11 @@ final class EventTapManager {
     private var dockBadges: [String: String] = [:]
 
     private var timeoutWork: DispatchWorkItem?
+    private var panelShowWork: DispatchWorkItem?
     private var outsideClickMonitor: Any?
 
     private static let selectionTimeout: TimeInterval = 30
+    private static let panelShowDelay: TimeInterval = 0.1
 
     init(panel: SwitchPanel) {
         self.windowPanel = panel
@@ -267,19 +269,27 @@ private extension EventTapManager {
         targetApp = app
         startTimeout()
 
-        windowPanel.show(
-            items: windows,
-            appIcon: app.icon,
-            selected: selection,
-            onPick: { [weak self] index in
-                self?.pickWindowItem(at: index)
-            },
-            onHover: { [weak self] index in
-                self?.hoverWindowItem(at: index)
-            }
-        )
+        showWindowPanel()
         startOutsideClickMonitor()
         return true
+    }
+
+    /// 窗口面板的显示收口：延迟语义同 showAppPanel，cmd+` 快速点按直接切窗不闪面板
+    private func showWindowPanel() {
+        schedulePanelShow { [weak self] in
+            guard let self, self.mode == .windows, let app = self.targetApp else { return }
+            self.windowPanel.show(
+                items: self.items,
+                appIcon: app.icon,
+                selected: self.selection,
+                onPick: { [weak self] index in
+                    self?.pickWindowItem(at: index)
+                },
+                onHover: { [weak self] index in
+                    self?.hoverWindowItem(at: index)
+                }
+            )
+        }
     }
 
     private func beginAppSwitching(reverse: Bool) -> Bool {
@@ -299,21 +309,44 @@ private extension EventTapManager {
         mode = .apps
         startTimeout()
 
-        appPanel.show(
-            apps: switcherApps,
-            appIndex: appIndex,
-            windows: switcherApps[appIndex].windows,
-            windowIndex: windowIndex,
-            badges: switcherApps.map { dockBadges[$0.name] },
-            onPickApp: { [weak self] in self?.pickApp(at: $0) },
-            onHoverApp: { [weak self] in self?.hoverApp(at: $0) },
-            onPickWindow: { [weak self] in self?.pickWindow(at: $0) },
-            onHoverWindow: { [weak self] in self?.hoverWindow(at: $0) },
-            onScrollApp: { [weak self] in self?.moveApp(by: $0) }
-        )
+        showAppPanel()
         refreshDockBadges()
         startOutsideClickMonitor()
         return true
+    }
+
+    /// 面板显示调用收口：开启「延迟显示面板」时按住 100ms 才出现，
+    /// 快速点按（期间松开 cmd）不闪面板直接切换。闭包到点读取最新状态，
+    /// 延迟期间 tab 移动 / Esc 取消已生效；面板未显示时其 selectApp 等
+    /// 调用因空数据 guard 自然 no-op，无需特判
+    private func showAppPanel() {
+        schedulePanelShow { [weak self] in
+            guard let self, self.mode == .apps else { return }
+            self.appPanel.show(
+                apps: self.switcherApps,
+                appIndex: self.appIndex,
+                windows: self.switcherApps[self.appIndex].windows,
+                windowIndex: self.windowIndex,
+                badges: self.switcherApps.map { self.dockBadges[$0.name] },
+                onPickApp: { [weak self] in self?.pickApp(at: $0) },
+                onHoverApp: { [weak self] in self?.hoverApp(at: $0) },
+                onPickWindow: { [weak self] in self?.pickWindow(at: $0) },
+                onHoverWindow: { [weak self] in self?.hoverWindow(at: $0) },
+                onScrollApp: { [weak self] in self?.moveApp(by: $0) }
+            )
+        }
+    }
+
+    /// 延迟显示收口（两个面板共用）：开启配置时面板延迟 100ms 出现，
+    /// 期间结束选择（松开 cmd / Esc / 点击外部）即取消，面板不出现
+    private func schedulePanelShow(_ show: @escaping () -> Void) {
+        guard Settings.delayedPanel else {
+            show()
+            return
+        }
+        let work = DispatchWorkItem(block: show)
+        panelShowWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.panelShowDelay, execute: work)
     }
 
     /// 后台读 Dock 角标（AX 可跨线程，避免卡首按），主线程更新缓存与面板视图
@@ -510,6 +543,8 @@ private extension EventTapManager {
         switcherApps = []
         timeoutWork?.cancel()
         timeoutWork = nil
+        panelShowWork?.cancel()
+        panelShowWork = nil
         stopOutsideClickMonitor()
         windowPanel.dismiss()
         appPanel.dismiss()
