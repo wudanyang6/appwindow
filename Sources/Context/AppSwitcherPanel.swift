@@ -31,6 +31,7 @@ final class AppSwitcherPanel {
 
     // 每屏一个合并面板（图标行 + 下挂列表同窗）
     private var panels: [NonKeyPanel] = []
+    private let passthrough = PanelMousePassthrough()
     // 每屏一套行视图（index 与窗口索引一致），高亮切换遍历所有屏
     private var rowViewsPerScreen: [[WindowRowView]] = []
     private var arrowsPerScreen: [(up: NSImageView, down: NSImageView)] = []
@@ -93,6 +94,7 @@ final class AppSwitcherPanel {
         // 面板生命周期内短暂 active，关闭即失活，接受）。
         // 面板键盘输入本就来自 EventTap，不依赖窗口系统派发
         panel.makeKeyAndOrderFront(nil)
+        passthrough.start(window: panel)
         DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
     }
 
@@ -130,6 +132,7 @@ final class AppSwitcherPanel {
     }
 
     func dismiss() {
+        passthrough.stop()
         panels.forEach { $0.orderOut(nil) }
         panels = []
         rowViewsPerScreen = []
@@ -151,7 +154,9 @@ final class AppSwitcherPanel {
 private extension AppSwitcherPanel {
 
     private func configure(_ panel: NSPanel) {
-        panel.level = .screenSaver
+        // 不用 .screenSaver：该级别的跨屏窗口只在窗口主屏渲染（macOS 26+ 实测），
+        // statusBar 仍高于一切普通窗口，切换面板够用且能双屏显示
+        panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true

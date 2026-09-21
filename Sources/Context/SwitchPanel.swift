@@ -26,6 +26,7 @@ final class SwitchPanel {
     private var panels: [NonKeyPanel] = []
     // 每屏一套行视图（index 与窗口索引一致），高亮切换遍历所有屏
     private var rowViewsPerScreen: [[WindowRowView]] = []
+    private let passthrough = PanelMousePassthrough()
     private var items: [WindowItem] = []
     private var selectedIndex = 0
     private var onPick: ((Int) -> Void)?
@@ -101,6 +102,7 @@ final class SwitchPanel {
         panel.orderFrontRegardless()
         // 成 key 使玻璃呈聚焦样式（激活语义见 AppSwitcherPanel.show 的注释）
         panel.makeKeyAndOrderFront(nil)
+        passthrough.start(window: panel)
         DiagLog.log("panel", "switch makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
     }
 
@@ -115,6 +117,7 @@ final class SwitchPanel {
     }
 
     func dismiss() {
+        passthrough.stop()
         panels.forEach { $0.orderOut(nil) }
         panels = []
         rowViewsPerScreen = []
@@ -133,7 +136,9 @@ final class SwitchPanel {
 private extension SwitchPanel {
 
     private func configure(_ panel: NSPanel) {
-        panel.level = .screenSaver
+        // 不用 .screenSaver：该级别的跨屏窗口只在窗口主屏渲染（macOS 26+ 实测），
+        // statusBar 仍高于一切普通窗口，切换面板够用且能双屏显示
+        panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -245,6 +250,43 @@ final class PanelRootView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         return hit === self ? nil : hit
+    }
+}
+
+/// 跨屏单窗的空白区鼠标穿透：窗口覆盖所有屏，玻璃容器之外必须放行下层点击。
+/// 视图层 hitTest 不会让事件离开本 app（global monitor 也就收不到取消点击），
+/// 必须 ignoresMouseEvents 整窗穿透——true 时窗口不收任何事件，靠 mouseMoved
+/// 监听感知鼠标回到容器区再切回 false；面板关闭时必须 stop 还原
+final class PanelMousePassthrough {
+
+    private var monitors: [Any] = []
+    private weak var window: NSWindow?
+
+    func start(window: NSWindow) {
+        self.window = window
+        update()
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+            self?.update()
+        })
+        monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            self?.update()
+            return event
+        })
+    }
+
+    func stop() {
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors = []
+        window?.ignoresMouseEvents = false
+        window = nil
+    }
+
+    /// 命中任一玻璃容器才接管鼠标；空白区整窗穿透（点击直达下层 app，
+    /// 并经面板外的 global mousedown monitor 触发取消）
+    private func update() {
+        guard let window, let root = window.contentView as? PanelRootView else { return }
+        let point = root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        window.ignoresMouseEvents = root.hitTest(point) == nil
     }
 }
 
