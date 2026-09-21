@@ -21,7 +21,9 @@ enum DockBadgeService {
         guard let list = axDock.children.first else { return [:] }
         var badges: [String: String] = [:]
         for item in list.children {
-            // title 复用 AXHelpers 的扩展；dock title 与 localizedName 基本一致
+            // 只认运行中 app 的 dock item：iPhone 接力 item 与真实 app 同名（如"提醒事项"），
+            // 其 statusLabel 是设备标识（com.apple.iphone-…），会覆盖同名 app 的真实未读数
+            guard item.subrole == "AXApplicationDockItem" else { continue }
             let title = item.title ?? ""
             guard !title.isEmpty, let status = item.statusLabel, !status.isEmpty else { continue }
             badges[title] = status
@@ -40,5 +42,11 @@ private extension AXUIElement {
     /// dock item 的角标文字（AXStatusLabel），无角标时为空或缺失
     var statusLabel: String? {
         copyAttribute("AXStatusLabel") as? String
+    }
+
+    /// dock item 的 subrole：AXApplicationDockItem 是运行中 app，
+    /// AXHandoffDockItem / AXFolderDockItem 等是非 app 条目
+    var subrole: String? {
+        copyAttribute(kAXSubroleAttribute) as? String
     }
 }
