@@ -45,33 +45,48 @@ final class SwitchPanel {
         self.onPick = onPick
         selectedIndex = initialSelected
 
-        var allRows: [[WindowRowView]] = []
-        var scrollContents: [NSView] = []
-        var allArrows: [(up: NSImageView, down: NSImageView)] = []
         let shownCount = min(PanelMetrics.maxListRows(), items.count)
         let clipHeight = CGFloat(shownCount) * PanelMetrics.rowHeight
         let contentHeight = CGFloat(items.count) * PanelMetrics.rowHeight
         let hoverGate = MouseHoverGate()
 
-        for screen in NSScreen.screens {
-            let panel = NonKeyPanel(contentRect: .zero,
-                                    styleMask: [.borderless, .nonactivatingPanel],
-                                    backing: .buffered,
-                                    defer: false)
-            panel.identifier = NSUserInterfaceItemIdentifier("switch-\(panels.count)")
-            configure(panel)
+        // 跨屏单窗：液态玻璃的聚焦渲染跟随窗口 key 状态，而一个 app 只有一个
+        // key window；每屏各开一窗时非 key 屏的玻璃会退化为失活样式，单窗共享聚焦态。
+        // 窗口覆盖所有屏可视区域的联合矩形，空白区经 PanelRootView 穿透，不挡下层
+        let screens = NSScreen.screens
+        let bounds = screens.map(\.visibleFrame).reduce(screens[0].visibleFrame) { $0.union($1) }
+        let root = PanelRootView(frame: NSRect(origin: .zero, size: bounds.size))
 
-            let (_, rows, scrollContent, arrows) = buildScreenContent(
-                screen: screen, panel: panel, items: items, appIcon: appIcon,
+        var allRows: [[WindowRowView]] = []
+        var scrollContents: [NSView] = []
+        var allArrows: [(up: NSImageView, down: NSImageView)] = []
+
+        for screen in screens {
+            let (background, rows, scrollContent, arrows) = buildScreenContent(
+                items: items, appIcon: appIcon,
                 clipHeight: clipHeight, contentHeight: contentHeight,
                 hoverGate: hoverGate, onHover: onHover
             )
-
-            panels.append(panel)
+            // 屏幕正中央（屏幕全局坐标）→ 窗口内相对坐标
+            let size = background.frame.size
+            let visible = screen.visibleFrame
+            let center = NSRect(x: visible.midX - size.width / 2,
+                                y: visible.midY - size.height / 2,
+                                width: size.width, height: size.height)
+            background.frame = center.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+            root.addSubview(background)
             allRows.append(rows)
             scrollContents.append(scrollContent)
             allArrows.append(arrows)
         }
+
+        let panel = NonKeyPanel(contentRect: .zero,
+                                styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered,
+                                defer: false)
+        panel.identifier = NSUserInterfaceItemIdentifier("switch-0")
+        configure(panel)
+        panels = [panel]
 
         rowViewsPerScreen = allRows
         arrowsPerScreen = allArrows
@@ -80,12 +95,13 @@ final class SwitchPanel {
                             contentHeight: contentHeight, clipHeight: clipHeight)
         updateScrollArrows()
 
-        panels.forEach { $0.orderFrontRegardless() }
-        // 首屏面板成 key 使玻璃呈聚焦样式（激活语义见 AppSwitcherPanel.show 的注释）
-        if let first = panels.first {
-            first.makeKeyAndOrderFront(nil)
-            DiagLog.log("panel", "switch makeKey: isKeyWindow=\(first.isKeyWindow) appActive=\(NSApp.isActive)")
-        }
+        panel.contentView = root
+        panel.setContentSize(bounds.size)
+        panel.setFrameOrigin(bounds.origin)
+        panel.orderFrontRegardless()
+        // 成 key 使玻璃呈聚焦样式（激活语义见 AppSwitcherPanel.show 的注释）
+        panel.makeKeyAndOrderFront(nil)
+        DiagLog.log("panel", "switch makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
     }
 
     func select(index: Int) {
@@ -128,9 +144,9 @@ private extension SwitchPanel {
         panel.acceptsMouseMovedEvents = true
     }
 
-    /// 构建单个屏幕的完整面板内容；返回滚动用的内容视图与箭头供跨屏同步
-    private func buildScreenContent(screen: NSScreen, panel: NonKeyPanel,
-                                    items: [WindowItem], appIcon: NSImage?,
+    /// 构建单个屏幕的面板内容（原点 0,0，屏幕定位由调用方平移进跨屏单窗）；
+    /// 返回滚动用的内容视图与箭头供跨屏同步
+    private func buildScreenContent(items: [WindowItem], appIcon: NSImage?,
                                     clipHeight: CGFloat, contentHeight: CGFloat,
                                     hoverGate: MouseHoverGate,
                                     onHover: @escaping (Int) -> Void)
@@ -210,17 +226,6 @@ private extension SwitchPanel {
         background.addSubview(up)
         background.addSubview(down)
 
-        // setContentView 会把视图 resize 到窗口当前内容尺寸（初始为 zero），
-        // 先保存目标尺寸，替换后再由 setContentSize 恢复
-        let size = background.frame.size
-        panel.contentView = background
-        panel.setContentSize(size)
-
-        // 屏幕正中央
-        let frame = screen.visibleFrame
-        panel.setFrameOrigin(CGPoint(x: frame.midX - size.width / 2,
-                                     y: frame.midY - size.height / 2))
-
         return (background, rows, content, (up, down))
     }
 
@@ -233,6 +238,15 @@ private extension SwitchPanel {
 }
 
 // MARK: - 共享子视图（AppSwitcherPanel 复用）
+
+/// 跨屏单窗的根视图：命中自身（玻璃容器之外的空白区）返回 nil，
+/// 鼠标事件穿透到下层窗口，避免大窗口挡住整片屏幕的交互
+final class PanelRootView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
 
 /// nonactivating 面板：可成为 key window（驱动玻璃聚焦样式）但绝不激活 App、
 /// 不改变当前 active app；键盘事件仍由 EventTapManager 在事件 tap 层拦截驱动

@@ -74,25 +74,26 @@ final class AppSwitcherPanel {
         self.onScrollApp = onScrollApp
         hoverGate = MouseHoverGate()
 
-        for (screenIndex, _) in NSScreen.screens.enumerated() {
-            let panel = NonKeyPanel(contentRect: .zero,
-                                    styleMask: [.borderless, .nonactivatingPanel],
-                                    backing: .buffered, defer: false)
-            panel.identifier = NSUserInterfaceItemIdentifier("switcher-\(screenIndex)")
-            configure(panel)
-            panels.append(panel)
-        }
+        // 跨屏单窗：液态玻璃的聚焦渲染跟随窗口 key 状态，而一个 app 只有一个
+        // key window；每屏各开一窗时非 key 屏的玻璃会退化为失活样式。单窗承载
+        // 所有屏的图标行与下挂列表，makeKey 一次，全部玻璃共享聚焦态。
+        // 窗口覆盖所有屏可视区域的联合矩形（render 里计算），空白区经 PanelRootView 穿透
+        let panel = NonKeyPanel(contentRect: .zero,
+                                styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+        panel.identifier = NSUserInterfaceItemIdentifier("switcher-0")
+        configure(panel)
+        panels = [panel]
 
         render()
 
         // 无入场动画，优先性能
-        panels.forEach { $0.orderFrontRegardless() }
-        // 单窗口承载图标行与下挂列表：makeKey 一次，两块玻璃同窗共享聚焦态
-        // （液态玻璃的聚焦渲染跟随窗口 key 状态）。makeKey 系调用实测必然隐式激活
-        // App（yieldActivation 也无法避免；面板生命周期内短暂 active，关闭即失活，接受）。
+        panel.orderFrontRegardless()
+        // makeKey 系调用实测必然隐式激活 App（yieldActivation 也无法避免；
+        // 面板生命周期内短暂 active，关闭即失活，接受）。
         // 面板键盘输入本就来自 EventTap，不依赖窗口系统派发
-        panels.first?.makeKeyAndOrderFront(nil)
-        DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panels.first?.isKeyWindow ?? false) appActive=\(NSApp.isActive)")
+        panel.makeKeyAndOrderFront(nil)
+        DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
     }
 
     /// tab 移动到另一个应用；windows 由调用方传入（值语义数组，面板不与 manager 共享状态）
@@ -208,50 +209,42 @@ private extension AppSwitcherPanel {
     }
 
     private func render() {
-        guard !panels.isEmpty, let hoverGate else { return }
+        guard let panel = panels.first, let hoverGate else { return }
 
         let total = currentWindows.count
         let shownCount = min(SwitcherMetrics.maxListRows, total)
         let clipHeight = CGFloat(shownCount) * SwitcherMetrics.rowHeight
         let contentHeight = CGFloat(total) * SwitcherMetrics.rowHeight
 
+        // 窗口覆盖所有屏可视区域的联合矩形（show 里创建的跨屏单窗），
+        // 各屏内容按屏幕全局坐标布局后平移进窗口
+        let screens = NSScreen.screens
+        let bounds = screens.map(\.visibleFrame).reduce(screens[0].visibleFrame) { $0.union($1) }
+        let root = PanelRootView(frame: NSRect(origin: .zero, size: bounds.size))
+
         var allRows: [[WindowRowView]] = []
         var scrollContents: [NSView] = []
         var allArrows: [(up: NSImageView, down: NSImageView)] = []
         var allSlots: [[IconSlotView]] = []
 
-        for (screenIndex, screen) in NSScreen.screens.enumerated() {
-            guard screenIndex < panels.count else { continue }
-            let panel = panels[screenIndex]
-
+        for screen in screens {
             let icon = layoutIconPanel(on: screen, hoverGate: hoverGate)
             let list = layoutListPanel(on: screen, iconFrame: icon.frame,
                                        highlightedCenter: icon.highlightedCenter,
                                        clipHeight: clipHeight, contentHeight: contentHeight,
                                        hoverGate: hoverGate)
-
-            // 图标行与列表合并进单窗口：union 矩形容纳两者，子容器按相对坐标摆放，
-            // 间隙保持透明（与原双面板间的屏幕缝隙视觉等价）
-            let union: NSRect = list.map { icon.frame.union($0.frame) } ?? icon.frame
-            let root = NSView(frame: NSRect(x: 0, y: 0, width: union.width, height: union.height))
-            icon.container.frame = NSRect(x: icon.frame.minX - union.minX,
-                                          y: icon.frame.minY - union.minY,
-                                          width: icon.frame.width, height: icon.frame.height)
+            // 图标行与列表的容器平移进跨屏单窗：屏幕全局坐标 → 窗口内相对坐标，
+            // 间隙保持透明（与各屏独立开窗时的屏幕缝隙视觉等价）
+            icon.container.frame = icon.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
             root.addSubview(icon.container)
             if let list {
-                list.container.frame = NSRect(x: list.frame.minX - union.minX,
-                                              y: list.frame.minY - union.minY,
-                                              width: list.frame.width, height: list.frame.height)
+                list.container.frame = list.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
                 root.addSubview(list.container)
                 allRows.append(list.rows)
                 scrollContents.append(list.scrollContent)
                 allArrows.append(list.arrows)
             }
             allSlots.append(icon.slots)
-
-            // union 顶部恒为图标行顶：窗口向下生长，图标行屏幕位置恒定
-            // （原「列表高度变化不影响主面板位置」的约束保持成立）
-            apply(root, to: panel, x: union.minX, topY: union.maxY)
         }
 
         rowViewsPerScreen = allRows
@@ -261,6 +254,9 @@ private extension AppSwitcherPanel {
         listScroller.attach(contents: scrollContents,
                             contentHeight: contentHeight, clipHeight: clipHeight)
         updateScrollArrows()
+
+        // 图标行屏幕位置恒定：列表高度变化只改变窗口下方内容，不挪图标行
+        apply(root, to: panel, x: bounds.minX, topY: bounds.maxY)
     }
 
     /// 布局图标行（不落窗口）：返回容器视图、屏幕坐标矩形、槽位视图与高亮图标中心横坐标
