@@ -3,6 +3,36 @@ import ApplicationServices
 
 enum WindowActivator {
 
+    /// 应用级激活（cmd+tab 默认提交路径）：activate 后聚焦 MRU 第一的窗口
+    /// （面板列表第一行），activate 的系统决策不可控（macOS 26 实测会选偏），
+    /// 显式聚焦保证「切到 app 即回到最近使用的窗口」。
+    /// focus 对后台 app 无效，必须在 activate 之后执行；preferred 缺失
+    /// （无窗口或最小化，原生 cmd+tab 不恢复最小化窗口）时退回纯 activate。
+    /// 决策窗口与 preferred 不一致时存在「先决策后纠正」的短暂中间态（结构性，
+    /// 见激活机制实测结论，不要试图用 AX 顺序调整消除）
+    static func activateApp(_ app: NSRunningApplication, preferred: WindowItem?) {
+        DiagLog.log("activate", "app-level app=\(app.localizedName ?? "?")(\(app.processIdentifier)) "
+            + "preferred=\"\(preferred?.title ?? "nil")\"")
+
+        guard let preferred else {
+            app.activate()
+            return
+        }
+
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.25)
+        app.activate()
+
+        DispatchQueue.main.async {
+            focus(preferred.axWindow, axApp: axApp)
+            // 补拍：activate 异步生效等时序竞争的兜底
+            DispatchQueue.main.asyncAfter(deadline: .now() + focusRetryDelay) {
+                focus(preferred.axWindow, axApp: axApp)
+                verify(axApp: axApp)
+            }
+        }
+    }
+
     /// 恢复最小化 → 聚焦窗口 → 视情况激活 app。
     /// 先走纯 AX（AXRaise + setFocused）：部分 app 的 setFocused 自带窗口级激活——
     /// 不触发 activate() 的组提升（把同 app 所有窗口拉到各自显示器/Space 最前，

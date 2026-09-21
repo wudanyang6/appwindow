@@ -31,7 +31,6 @@ final class AppSwitcherPanel {
 
     // 每屏一个合并面板（图标行 + 下挂列表同窗）
     private var panels: [NonKeyPanel] = []
-    private let passthrough = PanelMousePassthrough()
     // 每屏一套行视图（index 与窗口索引一致），高亮切换遍历所有屏
     private var rowViewsPerScreen: [[WindowRowView]] = []
     private var arrowsPerScreen: [(up: NSImageView, down: NSImageView)] = []
@@ -39,7 +38,8 @@ final class AppSwitcherPanel {
     private var apps: [SwitcherApp] = []
     private var currentWindows: [WindowItem] = []
     private var appIndex = 0
-    private var windowIndex = 0
+    // 当前高亮应用选中的窗口；nil = 未选（列表无高亮行，提交走应用级激活）
+    private var windowIndex: Int?
     // dock 角标（未读数），与 apps 索引对齐；异步刷新后经 updateBadges 更新视图
     private var badges: [String?] = []
     // 每屏一套图标槽位（index 与应用索引一致），角标刷新需要持有引用
@@ -52,15 +52,18 @@ final class AppSwitcherPanel {
     private var onPickWindow: ((Int) -> Void)?
     private var onHoverWindow: ((Int) -> Void)?
     private var onScrollApp: ((Int) -> Void)?
+    // 透明间隙（union 窗口内、容器之外）被点击时取消面板
+    private var onCancel: (() -> Void)?
     private var hoverGate: MouseHoverGate?
 
-    func show(apps: [SwitcherApp], appIndex: Int, windows: [WindowItem], windowIndex: Int,
+    func show(apps: [SwitcherApp], appIndex: Int, windows: [WindowItem], windowIndex: Int?,
               badges: [String?],
               onPickApp: @escaping (Int) -> Void,
               onHoverApp: @escaping (Int) -> Void,
               onPickWindow: @escaping (Int) -> Void,
               onHoverWindow: @escaping (Int) -> Void,
-              onScrollApp: @escaping (Int) -> Void) {
+              onScrollApp: @escaping (Int) -> Void,
+              onCancel: @escaping () -> Void) {
         dismiss()
 
         self.apps = apps
@@ -73,33 +76,31 @@ final class AppSwitcherPanel {
         self.onPickWindow = onPickWindow
         self.onHoverWindow = onHoverWindow
         self.onScrollApp = onScrollApp
+        self.onCancel = onCancel
         hoverGate = MouseHoverGate()
 
-        // 跨屏单窗：液态玻璃的聚焦渲染跟随窗口 key 状态，而一个 app 只有一个
-        // key window；每屏各开一窗时非 key 屏的玻璃会退化为失活样式。单窗承载
-        // 所有屏的图标行与下挂列表，makeKey 一次，全部玻璃共享聚焦态。
-        // 窗口覆盖所有屏可视区域的联合矩形（render 里计算），空白区经 PanelRootView 穿透
-        let panel = NonKeyPanel(contentRect: .zero,
-                                styleMask: [.borderless, .nonactivatingPanel],
-                                backing: .buffered, defer: false)
-        panel.identifier = NSUserInterfaceItemIdentifier("switcher-0")
-        configure(panel)
-        panels = [panel]
+        for (screenIndex, _) in NSScreen.screens.enumerated() {
+            let panel = NonKeyPanel(contentRect: .zero,
+                                    styleMask: [.borderless, .nonactivatingPanel],
+                                    backing: .buffered, defer: false)
+            panel.identifier = NSUserInterfaceItemIdentifier("switcher-\(screenIndex)")
+            configure(panel)
+            panels.append(panel)
+        }
 
         render()
 
         // 无入场动画，优先性能
-        panel.orderFrontRegardless()
-        // makeKey 系调用实测必然隐式激活 App（yieldActivation 也无法避免；
-        // 面板生命周期内短暂 active，关闭即失活，接受）。
-        // 面板键盘输入本就来自 EventTap，不依赖窗口系统派发
-        panel.makeKeyAndOrderFront(nil)
-        passthrough.start(window: panel)
-        DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
+        panels.forEach { $0.orderFrontRegardless() }
+        // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型：app 同一时刻
+        // 只有一个 key window，跨屏玻璃聚焦靠 hover 转正 key 切换）。
+        // makeKey 系调用实测必然隐式激活 App（面板生命周期内短暂 active，接受）
+        panels.first?.makeKeyAndOrderFront(nil)
+        DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panels.first?.isKeyWindow ?? false) appActive=\(NSApp.isActive)")
     }
 
     /// tab 移动到另一个应用；windows 由调用方传入（值语义数组，面板不与 manager 共享状态）
-    func selectApp(index: Int, windows: [WindowItem], selectedWindow: Int) {
+    func selectApp(index: Int, windows: [WindowItem], selectedWindow: Int?) {
         guard apps.indices.contains(index) else { return }
         appIndex = index
         currentWindows = windows
@@ -114,7 +115,7 @@ final class AppSwitcherPanel {
 
         if previous != index {
             for rows in rowViewsPerScreen {
-                if rows.indices.contains(previous) { rows[previous].setHighlighted(false) }
+                if let previous, rows.indices.contains(previous) { rows[previous].setHighlighted(false) }
                 if rows.indices.contains(index) { rows[index].setHighlighted(true) }
             }
         }
@@ -132,7 +133,6 @@ final class AppSwitcherPanel {
     }
 
     func dismiss() {
-        passthrough.stop()
         panels.forEach { $0.orderOut(nil) }
         panels = []
         rowViewsPerScreen = []
@@ -145,6 +145,7 @@ final class AppSwitcherPanel {
         onPickWindow = nil
         onHoverWindow = nil
         onScrollApp = nil
+        onCancel = nil
         hoverGate = nil
     }
 }
@@ -154,9 +155,7 @@ final class AppSwitcherPanel {
 private extension AppSwitcherPanel {
 
     private func configure(_ panel: NSPanel) {
-        // 不用 .screenSaver：该级别的跨屏窗口只在窗口主屏渲染（macOS 26+ 实测），
-        // statusBar 仍高于一切普通窗口，切换面板够用且能双屏显示
-        panel.level = .statusBar
+        panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -204,52 +203,69 @@ private extension AppSwitcherPanel {
         return container
     }
 
-    private func apply(_ background: NSView, to panel: NSPanel, x: CGFloat, topY: CGFloat) {
+    private func apply(_ background: NSView, to panel: NonKeyPanel, x: CGFloat, topY: CGFloat) {
         // setContentView 会把视图 resize 到窗口当前内容尺寸（初始为 zero），
         // 因此必须先保存目标尺寸，替换后再由 setContentSize 恢复
         let size = background.frame.size
         panel.contentView = background
         panel.setContentSize(size)
         panel.setFrameOrigin(CGPoint(x: x, y: topY - size.height))
+        // contentView 替换后装 hover 探测层：鼠标进入该屏面板即转 key（玻璃聚焦跟随）
+        panel.installHoverCatcher()
     }
 
     private func render() {
-        guard let panel = panels.first, let hoverGate else { return }
+        guard !panels.isEmpty, let hoverGate else { return }
 
         let total = currentWindows.count
         let shownCount = min(SwitcherMetrics.maxListRows, total)
         let clipHeight = CGFloat(shownCount) * SwitcherMetrics.rowHeight
         let contentHeight = CGFloat(total) * SwitcherMetrics.rowHeight
 
-        // 窗口覆盖所有屏可视区域的联合矩形（show 里创建的跨屏单窗），
-        // 各屏内容按屏幕全局坐标布局后平移进窗口
-        let screens = NSScreen.screens
-        let bounds = screens.map(\.visibleFrame).reduce(screens[0].visibleFrame) { $0.union($1) }
-        let root = PanelRootView(frame: NSRect(origin: .zero, size: bounds.size))
-
         var allRows: [[WindowRowView]] = []
         var scrollContents: [NSView] = []
         var allArrows: [(up: NSImageView, down: NSImageView)] = []
         var allSlots: [[IconSlotView]] = []
 
-        for screen in screens {
+        for (screenIndex, screen) in NSScreen.screens.enumerated() {
+            guard screenIndex < panels.count else { continue }
+            let panel = panels[screenIndex]
+
             let icon = layoutIconPanel(on: screen, hoverGate: hoverGate)
             let list = layoutListPanel(on: screen, iconFrame: icon.frame,
                                        highlightedCenter: icon.highlightedCenter,
                                        clipHeight: clipHeight, contentHeight: contentHeight,
                                        hoverGate: hoverGate)
-            // 图标行与列表的容器平移进跨屏单窗：屏幕全局坐标 → 窗口内相对坐标，
-            // 间隙保持透明（与各屏独立开窗时的屏幕缝隙视觉等价）
-            icon.container.frame = icon.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+
+            // 图标行与列表合并进单窗口：union 矩形容纳两者，子容器按相对坐标摆放，
+            // 间隙保持透明（与原双面板间的屏幕缝隙视觉等价）
+            let union: NSRect = list.map { icon.frame.union($0.frame) } ?? icon.frame
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: union.width, height: union.height))
+            icon.container.frame = NSRect(x: icon.frame.minX - union.minX,
+                                          y: icon.frame.minY - union.minY,
+                                          width: icon.frame.width, height: icon.frame.height)
             root.addSubview(icon.container)
             if let list {
-                list.container.frame = list.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+                list.container.frame = NSRect(x: list.frame.minX - union.minX,
+                                              y: list.frame.minY - union.minY,
+                                              width: list.frame.width, height: list.frame.height)
                 root.addSubview(list.container)
                 allRows.append(list.rows)
                 scrollContents.append(list.scrollContent)
                 allArrows.append(list.arrows)
             }
+            // 透明间隙点击层：union 矩形内、两容器之外的区域视觉透明，但点击
+            // 会命中本 app 窗口而不触发「面板外点击取消」（global monitor 只收
+            // app 外事件），垫底承接这些区域的点击 → 取消面板，语义等同面板外
+            let cancelCatcher = TransparentClickCatcher(frame: root.bounds)
+            cancelCatcher.autoresizingMask = [.width, .height]
+            cancelCatcher.onClick = { [weak self] in self?.onCancel?() }
+            root.addSubview(cancelCatcher, positioned: .below, relativeTo: icon.container)
             allSlots.append(icon.slots)
+
+            // union 顶部恒为图标行顶：窗口向下生长，图标行屏幕位置恒定
+            // （原「列表高度变化不影响主面板位置」的约束保持成立）
+            apply(root, to: panel, x: union.minX, topY: union.maxY)
         }
 
         rowViewsPerScreen = allRows
@@ -259,9 +275,6 @@ private extension AppSwitcherPanel {
         listScroller.attach(contents: scrollContents,
                             contentHeight: contentHeight, clipHeight: clipHeight)
         updateScrollArrows()
-
-        // 图标行屏幕位置恒定：列表高度变化只改变窗口下方内容，不挪图标行
-        apply(root, to: panel, x: bounds.minX, topY: bounds.maxY)
     }
 
     /// 布局图标行（不落窗口）：返回容器视图、屏幕坐标矩形、槽位视图与高亮图标中心横坐标
@@ -334,29 +347,32 @@ private extension AppSwitcherPanel {
                             max(SwitcherMetrics.listWidthMin, maxTitleWidth + 54))
 
         let height = clipHeight + SwitcherMetrics.edgeInset * 2
-        // 面板宽度 = 行宽 + 两侧边距；行从 edgeInset 起、宽 listWidth，缺了边距会让高亮块溢出背景右缘
+        // 列表内容宽 listWidth，面板宽加两侧边距；行占满面板宽（两侧边距可点击），
+        // 高亮块由行内 contentInset 内缩，视觉宽度仍为 listWidth
         let panelWidth = listWidth + SwitcherMetrics.edgeInset * 2
         let background = makeContainer(width: panelWidth, height: height)
         background.onScrollRaw = { [weak self] in self?.listScroller.scroll(by: $0) }
 
         // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行
-        let clip = NSView(frame: NSRect(x: SwitcherMetrics.edgeInset, y: SwitcherMetrics.edgeInset,
-                                        width: listWidth, height: clipHeight))
+        let clip = NSView(frame: NSRect(x: 0, y: SwitcherMetrics.edgeInset,
+                                        width: panelWidth, height: clipHeight))
         clip.wantsLayer = true
         clip.layer?.masksToBounds = true
         background.addSubview(clip)
 
         let content = NSView(frame: NSRect(x: 0, y: clipHeight - contentHeight,
-                                           width: listWidth, height: contentHeight))
+                                           width: panelWidth, height: contentHeight))
         var rows: [WindowRowView] = []
         for (index, item) in currentWindows.enumerated() {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
-                                    width: listWidth, hoverGate: hoverGate,
+                                    width: panelWidth,
+                                    contentInset: SwitcherMetrics.edgeInset,
+                                    hoverGate: hoverGate,
                                     onHover: { [weak self] in self?.onHoverWindow?($0) },
                                     onClick: { [weak self] in self?.onPickWindow?($0) })
             row.frame = NSRect(x: 0,
                                y: CGFloat(total - 1 - index) * SwitcherMetrics.rowHeight,
-                               width: listWidth,
+                               width: panelWidth,
                                height: SwitcherMetrics.rowHeight)
             row.setHighlighted(index == windowIndex)
             content.addSubview(row)
@@ -391,6 +407,16 @@ private extension AppSwitcherPanel {
 
 // MARK: - 子视图
 
+/// 透明间隙点击层：垫在图标行/列表容器之下，承接 union 窗口内透明区域的点击，
+/// 视觉上这些区域不属于面板，点击语义等同面板外 → 取消
+private final class TransparentClickCatcher: NSView {
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+}
+
 private final class IconSlotView: NSView {
 
     private let index: Int
@@ -399,12 +425,15 @@ private final class IconSlotView: NSView {
     private let onClick: (Int) -> Void
     private var badgeView: BadgeView?
     private let iconView: NSImageView
+    // 槽位边长（图标随应用数量缩放），角标尺寸随它等比缩放
+    private let slotSize: CGFloat
 
     init(index: Int, icon: NSImage?, iconSize: CGFloat, slotSize: CGFloat,
          hoverGate: MouseHoverGate,
          onHover: @escaping (Int) -> Void,
          onClick: @escaping (Int) -> Void) {
         self.index = index
+        self.slotSize = slotSize
         self.hoverGate = hoverGate
         self.onHover = onHover
         self.onClick = onClick
@@ -429,9 +458,9 @@ private final class IconSlotView: NSView {
     }
 
     func setSelected(_ selected: Bool) {
-        // 选中样式为图标底色高亮（accent 半透明圆角块），未选中透明
+        // 选中样式为透明稍暗的底色（玻璃上的暗色半透明块，深浅外观下都是「压暗」）
         layer?.backgroundColor = selected
-            ? NSColor.controlAccentColor.withAlphaComponent(0.75).cgColor
+            ? NSColor.black.withAlphaComponent(0.2).cgColor
             : nil
     }
 
@@ -442,7 +471,7 @@ private final class IconSlotView: NSView {
         badgeView = nil
         guard let text, !text.isEmpty, frame.width > 0 else { return }
 
-        let badge = BadgeView(text: text)
+        let badge = BadgeView(text: text, iconSize: slotSize)
         // 内收骑角：badge 中心压在图案右上角偏左下 1/4 处，只外突 1/4
         // （整半骑角视觉上太飘，见实测反馈）
         let content = iconContentRect
@@ -553,16 +582,19 @@ private final class IconSlotView: NSView {
     }
 }
 
-/// Dock 同款未读角标：红底白字胶囊，宽度随文字自适应（"1" 是圆点、"99+" 加宽）
+/// Dock 同款未读角标：红底白字胶囊，宽度随文字自适应（"1" 是圆点、"99+" 加宽），
+/// 高度与字号随图标槽位等比缩放（基准：154 槽位 ≈ 24pt 胶囊），夹 12–24pt 保可读
 private final class BadgeView: NSView {
 
-    init(text: String) {
-        let font = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    init(text: String, iconSize: CGFloat) {
+        // 全套尺寸按胶囊高度等比推导；基准 154 槽位 ≈ 48pt（约为图标的 1/3）
+        let height = min(max(iconSize * 48 / 154, 24), 48)
+        let font = NSFont.systemFont(ofSize: height * 2 / 3, weight: .semibold)
         let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        let height: CGFloat = 24
-        let width = max(height, textWidth + 14)
 
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        super.init(frame: NSRect(x: 0, y: 0,
+                                 width: max(height, textWidth + height * 7 / 12),
+                                 height: height))
 
         wantsLayer = true
         layer?.backgroundColor = NSColor.systemRed.cgColor
@@ -572,7 +604,9 @@ private final class BadgeView: NSView {
         label.font = font
         label.textColor = .white
         label.alignment = .center
-        label.frame = NSRect(x: 0, y: (height - 19) / 2, width: width, height: 19)
+        let labelHeight = height * 19 / 24
+        label.frame = NSRect(x: 0, y: (height - labelHeight) / 2,
+                             width: bounds.width, height: labelHeight)
         addSubview(label)
     }
 

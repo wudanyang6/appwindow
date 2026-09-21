@@ -26,7 +26,6 @@ final class SwitchPanel {
     private var panels: [NonKeyPanel] = []
     // 每屏一套行视图（index 与窗口索引一致），高亮切换遍历所有屏
     private var rowViewsPerScreen: [[WindowRowView]] = []
-    private let passthrough = PanelMousePassthrough()
     private var items: [WindowItem] = []
     private var selectedIndex = 0
     private var onPick: ((Int) -> Void)?
@@ -51,43 +50,29 @@ final class SwitchPanel {
         let contentHeight = CGFloat(items.count) * PanelMetrics.rowHeight
         let hoverGate = MouseHoverGate()
 
-        // 跨屏单窗：液态玻璃的聚焦渲染跟随窗口 key 状态，而一个 app 只有一个
-        // key window；每屏各开一窗时非 key 屏的玻璃会退化为失活样式，单窗共享聚焦态。
-        // 窗口覆盖所有屏可视区域的联合矩形，空白区经 PanelRootView 穿透，不挡下层
-        let screens = NSScreen.screens
-        let bounds = screens.map(\.visibleFrame).reduce(screens[0].visibleFrame) { $0.union($1) }
-        let root = PanelRootView(frame: NSRect(origin: .zero, size: bounds.size))
-
         var allRows: [[WindowRowView]] = []
         var scrollContents: [NSView] = []
         var allArrows: [(up: NSImageView, down: NSImageView)] = []
 
-        for screen in screens {
-            let (background, rows, scrollContent, arrows) = buildScreenContent(
-                items: items, appIcon: appIcon,
+        for screen in NSScreen.screens {
+            let panel = NonKeyPanel(contentRect: .zero,
+                                    styleMask: [.borderless, .nonactivatingPanel],
+                                    backing: .buffered,
+                                    defer: false)
+            panel.identifier = NSUserInterfaceItemIdentifier("switch-\(panels.count)")
+            configure(panel)
+
+            let (_, rows, scrollContent, arrows) = buildScreenContent(
+                screen: screen, panel: panel, items: items, appIcon: appIcon,
                 clipHeight: clipHeight, contentHeight: contentHeight,
                 hoverGate: hoverGate, onHover: onHover
             )
-            // 屏幕正中央（屏幕全局坐标）→ 窗口内相对坐标
-            let size = background.frame.size
-            let visible = screen.visibleFrame
-            let center = NSRect(x: visible.midX - size.width / 2,
-                                y: visible.midY - size.height / 2,
-                                width: size.width, height: size.height)
-            background.frame = center.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
-            root.addSubview(background)
+
+            panels.append(panel)
             allRows.append(rows)
             scrollContents.append(scrollContent)
             allArrows.append(arrows)
         }
-
-        let panel = NonKeyPanel(contentRect: .zero,
-                                styleMask: [.borderless, .nonactivatingPanel],
-                                backing: .buffered,
-                                defer: false)
-        panel.identifier = NSUserInterfaceItemIdentifier("switch-0")
-        configure(panel)
-        panels = [panel]
 
         rowViewsPerScreen = allRows
         arrowsPerScreen = allArrows
@@ -96,14 +81,12 @@ final class SwitchPanel {
                             contentHeight: contentHeight, clipHeight: clipHeight)
         updateScrollArrows()
 
-        panel.contentView = root
-        panel.setContentSize(bounds.size)
-        panel.setFrameOrigin(bounds.origin)
-        panel.orderFrontRegardless()
-        // 成 key 使玻璃呈聚焦样式（激活语义见 AppSwitcherPanel.show 的注释）
-        panel.makeKeyAndOrderFront(nil)
-        passthrough.start(window: panel)
-        DiagLog.log("panel", "switch makeKey: isKeyWindow=\(panel.isKeyWindow) appActive=\(NSApp.isActive)")
+        panels.forEach { $0.orderFrontRegardless() }
+        // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型，同 AppSwitcherPanel）
+        if let first = panels.first {
+            first.makeKeyAndOrderFront(nil)
+            DiagLog.log("panel", "switch makeKey: isKeyWindow=\(first.isKeyWindow) appActive=\(NSApp.isActive)")
+        }
     }
 
     func select(index: Int) {
@@ -117,7 +100,6 @@ final class SwitchPanel {
     }
 
     func dismiss() {
-        passthrough.stop()
         panels.forEach { $0.orderOut(nil) }
         panels = []
         rowViewsPerScreen = []
@@ -136,9 +118,7 @@ final class SwitchPanel {
 private extension SwitchPanel {
 
     private func configure(_ panel: NSPanel) {
-        // 不用 .screenSaver：该级别的跨屏窗口只在窗口主屏渲染（macOS 26+ 实测），
-        // statusBar 仍高于一切普通窗口，切换面板够用且能双屏显示
-        panel.level = .statusBar
+        panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -149,9 +129,9 @@ private extension SwitchPanel {
         panel.acceptsMouseMovedEvents = true
     }
 
-    /// 构建单个屏幕的面板内容（原点 0,0，屏幕定位由调用方平移进跨屏单窗）；
-    /// 返回滚动用的内容视图与箭头供跨屏同步
-    private func buildScreenContent(items: [WindowItem], appIcon: NSImage?,
+    /// 构建单个屏幕的完整面板内容；返回滚动用的内容视图与箭头供跨屏同步
+    private func buildScreenContent(screen: NSScreen, panel: NonKeyPanel,
+                                    items: [WindowItem], appIcon: NSImage?,
                                     clipHeight: CGFloat, contentHeight: CGFloat,
                                     hoverGate: MouseHoverGate,
                                     onHover: @escaping (Int) -> Void)
@@ -160,7 +140,6 @@ private extension SwitchPanel {
 
         let total = items.count
         let height = clipHeight + PanelMetrics.edgeInset * 2
-        let rowWidth = PanelMetrics.width - PanelMetrics.edgeInset * 2
 
         let background = ScrollContainerView(frame: NSRect(x: 0, y: 0,
                                                            width: PanelMetrics.width, height: height))
@@ -197,19 +176,22 @@ private extension SwitchPanel {
             background.addSubview(effect)
         }
 
-        // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行
-        let clip = NSView(frame: NSRect(x: PanelMetrics.edgeInset, y: PanelMetrics.edgeInset,
-                                        width: rowWidth, height: clipHeight))
+        // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行。
+        // 视口全宽：行占满面板宽（两侧边距可点击），高亮块由行内 contentInset 内缩
+        let clip = NSView(frame: NSRect(x: 0, y: PanelMetrics.edgeInset,
+                                        width: PanelMetrics.width, height: clipHeight))
         clip.wantsLayer = true
         clip.layer?.masksToBounds = true
         background.addSubview(clip)
 
         let content = NSView(frame: NSRect(x: 0, y: clipHeight - contentHeight,
-                                           width: rowWidth, height: contentHeight))
+                                           width: PanelMetrics.width, height: contentHeight))
         var rows: [WindowRowView] = []
         for (index, item) in items.enumerated() {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
-                                    width: rowWidth, hoverGate: hoverGate,
+                                    width: PanelMetrics.width,
+                                    contentInset: PanelMetrics.edgeInset,
+                                    hoverGate: hoverGate,
                                     onHover: { [weak self] index in
                                         self?.select(index: index)
                                         onHover(index)
@@ -217,7 +199,7 @@ private extension SwitchPanel {
                                     onClick: { [weak self] in self?.pickRow(at: $0) })
             row.frame = NSRect(x: 0,
                                y: CGFloat(total - 1 - index) * PanelMetrics.rowHeight,
-                               width: rowWidth,
+                               width: PanelMetrics.width,
                                height: PanelMetrics.rowHeight)
             row.setHighlighted(index == selectedIndex)
             content.addSubview(row)
@@ -230,6 +212,19 @@ private extension SwitchPanel {
         let down = NSImageView.scrollIndicator(symbol: "chevron.down", x: arrowX, y: 1)
         background.addSubview(up)
         background.addSubview(down)
+
+        // setContentView 会把视图 resize 到窗口当前内容尺寸（初始为 zero），
+        // 先保存目标尺寸，替换后再由 setContentSize 恢复
+        let size = background.frame.size
+        panel.contentView = background
+        panel.setContentSize(size)
+        // contentView 替换后装 hover 探测层：鼠标进入该屏面板即转 key（玻璃聚焦跟随）
+        panel.installHoverCatcher()
+
+        // 屏幕正中央
+        let frame = screen.visibleFrame
+        panel.setFrameOrigin(CGPoint(x: frame.midX - size.width / 2,
+                                     y: frame.midY - size.height / 2))
 
         return (background, rows, content, (up, down))
     }
@@ -244,55 +239,10 @@ private extension SwitchPanel {
 
 // MARK: - 共享子视图（AppSwitcherPanel 复用）
 
-/// 跨屏单窗的根视图：命中自身（玻璃容器之外的空白区）返回 nil，
-/// 鼠标事件穿透到下层窗口，避免大窗口挡住整片屏幕的交互
-final class PanelRootView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
-        return hit === self ? nil : hit
-    }
-}
-
-/// 跨屏单窗的空白区鼠标穿透：窗口覆盖所有屏，玻璃容器之外必须放行下层点击。
-/// 视图层 hitTest 不会让事件离开本 app（global monitor 也就收不到取消点击），
-/// 必须 ignoresMouseEvents 整窗穿透——true 时窗口不收任何事件，靠 mouseMoved
-/// 监听感知鼠标回到容器区再切回 false；面板关闭时必须 stop 还原
-final class PanelMousePassthrough {
-
-    private var monitors: [Any] = []
-    private weak var window: NSWindow?
-
-    func start(window: NSWindow) {
-        self.window = window
-        update()
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            self?.update()
-        })
-        monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            self?.update()
-            return event
-        })
-    }
-
-    func stop() {
-        monitors.forEach(NSEvent.removeMonitor)
-        monitors = []
-        window?.ignoresMouseEvents = false
-        window = nil
-    }
-
-    /// 命中任一玻璃容器才接管鼠标；空白区整窗穿透（点击直达下层 app，
-    /// 并经面板外的 global mousedown monitor 触发取消）
-    private func update() {
-        guard let window, let root = window.contentView as? PanelRootView else { return }
-        let point = root.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        window.ignoresMouseEvents = root.hitTest(point) == nil
-    }
-}
-
 /// nonactivating 面板：可成为 key window（驱动玻璃聚焦样式）但绝不激活 App、
 /// 不改变当前 active app；键盘事件仍由 EventTapManager 在事件 tap 层拦截驱动
 final class NonKeyPanel: NSPanel {
+
     override var canBecomeKey: Bool { true }
 
     // key 状态流转打点：排查玻璃聚焦样式不生效时区分「没成为 key」与「成了 key 但玻璃不认」
@@ -305,29 +255,67 @@ final class NonKeyPanel: NSPanel {
         super.resignKey()
         DiagLog.log("panel", "resignKey id=\(identifier?.rawValue ?? "?") appActive=\(NSApp.isActive)")
     }
+
+    /// 鼠标进入该屏面板区域时把面板转正为 key：多屏各一份面板，仅主屏面板
+    /// 在 show 时 makeKey，其他屏玻璃呈失焦态；进入即转 key，玻璃聚焦渲染跟随。
+    /// 单 key 窗口模型下转正必然抢走前一屏的 key，直接切换（过渡补偿方案
+    /// 已多轮实测被否，不再叠加）
+    func installHoverCatcher() {
+        let catcher = PanelHoverCatcher(frame: contentView?.bounds ?? .zero)
+        catcher.autoresizingMask = [.width, .height]
+        catcher.onEnter = { [weak self] in self?.makeKeyAndOrderFront(nil) }
+        contentView?.addSubview(catcher)
+    }
+}
+
+/// 全窗 hover 探测层：hitTest 穿透（点击/悬停/滚轮仍由图标与行视图处理），
+/// 仅承载 trackingArea，鼠标进入所在屏面板时回调
+final class PanelHoverCatcher: NSView {
+    var onEnter: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .activeAlways],
+                                       owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onEnter?()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 final class WindowRowView: NSView {
 
     private let index: Int
     private let titleLabel = NSTextField(labelWithString: "")
+    // 高亮块独立子层：行本体占满面板宽（两侧边距同样可点击，原生菜单行为），
+    // 视觉宽度由高亮块内缩 contentInset 保持
+    private let highlightLayer = CALayer()
+    private let contentInset: CGFloat
     private let hoverGate: MouseHoverGate
     private let onHover: (Int) -> Void
     private let onClick: (Int) -> Void
 
     init(index: Int, icon: NSImage?, title: String, width: CGFloat,
+         contentInset: CGFloat,
          hoverGate: MouseHoverGate,
          onHover: @escaping (Int) -> Void, onClick: @escaping (Int) -> Void) {
         self.index = index
+        self.contentInset = contentInset
         self.hoverGate = hoverGate
         self.onHover = onHover
         self.onClick = onClick
         super.init(frame: .zero)
 
         wantsLayer = true
-        layer?.cornerRadius = 8
+        highlightLayer.cornerRadius = 8
+        layer?.addSublayer(highlightLayer)
 
-        let iconView = NSImageView(frame: NSRect(x: 8, y: 8, width: 18, height: 18))
+        let iconView = NSImageView(frame: NSRect(x: contentInset + 8, y: 8, width: 18, height: 18))
         iconView.image = icon
         iconView.imageScaling = .scaleProportionallyDown
         addSubview(iconView)
@@ -339,7 +327,8 @@ final class WindowRowView: NSView {
         titleLabel.cell?.wraps = false
         titleLabel.cell?.truncatesLastVisibleLine = true
         // 手动 frame 布局不保证触发 layout()，初始宽度必须在此设置
-        titleLabel.frame = NSRect(x: 34, y: 9, width: width - 42, height: 18)
+        titleLabel.frame = NSRect(x: contentInset + 34, y: 9,
+                                  width: width - contentInset * 2 - 42, height: 18)
         addSubview(titleLabel)
     }
 
@@ -348,15 +337,18 @@ final class WindowRowView: NSView {
     }
 
     func setHighlighted(_ highlighted: Bool) {
-        layer?.backgroundColor = highlighted
-            ? NSColor.controlAccentColor.withAlphaComponent(0.85).cgColor
+        // 高亮为透明稍暗的底色（玻璃上的暗色半透明块），文字保持 labelColor
+        // 随系统外观自适应，不再反白
+        highlightLayer.backgroundColor = highlighted
+            ? NSColor.black.withAlphaComponent(0.2).cgColor
             : nil
-        titleLabel.textColor = highlighted ? .white : .labelColor
     }
 
     override func layout() {
         super.layout()
-        titleLabel.frame = NSRect(x: 34, y: 9, width: bounds.width - 42, height: 18)
+        titleLabel.frame = NSRect(x: contentInset + 34, y: 9,
+                                  width: bounds.width - contentInset * 2 - 42, height: 18)
+        highlightLayer.frame = bounds.insetBy(dx: contentInset, dy: 0)
     }
 
     override func mouseDown(with event: NSEvent) {

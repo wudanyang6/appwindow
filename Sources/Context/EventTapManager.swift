@@ -27,7 +27,9 @@ final class EventTapManager {
     // apps 模式状态
     private var switcherApps: [SwitcherApp] = []
     private var appIndex = 0
-    private var windowIndex = 0
+    // 当前高亮应用中选中的窗口；默认 0 = 高亮列表第一行（提交走窗口级激活），
+    // nil = 未选（仅点击图标提交时，走应用级激活）
+    private var windowIndex: Int?
 
     // app 激活顺序（MRU，最近在前）；已退出 app 的残留 pid 在排序时匹配不到，自然跳过
     private var appMRU: [pid_t] = []
@@ -38,11 +40,13 @@ final class EventTapManager {
     // dock 角标缓存（app 名 → 角标文字）：面板打开时先用缓存渲染，后台读 Dock 后更新
     private var dockBadges: [String: String] = [:]
 
-    private var timeoutWork: DispatchWorkItem?
+    private var modifierWatchTimer: Timer?
     private var panelShowWork: DispatchWorkItem?
     private var outsideClickMonitor: Any?
 
-    private static let selectionTimeout: TimeInterval = 30
+    // modifier 状态兜底轮询间隔：松开 cmd 的 flagsChanged 正常都会触发，
+    // 轮询只在事件丢失（tap 异常）时才生效，无需高频
+    private static let modifierWatchInterval: TimeInterval = 1
     private static let panelShowDelay: TimeInterval = 0.1
 
     init(panel: SwitchPanel) {
@@ -269,27 +273,19 @@ private extension EventTapManager {
         targetApp = app
         startTimeout()
 
-        showWindowPanel()
-        startOutsideClickMonitor()
-        return true
-    }
-
-    /// 窗口面板的显示收口：延迟语义同 showAppPanel，cmd+` 快速点按直接切窗不闪面板
-    private func showWindowPanel() {
-        schedulePanelShow { [weak self] in
+        // 延迟闭包到点读最新 selection（延迟期间 cmd+` 移动高亮已生效）
+        showPanel { [weak self] in
             guard let self, self.mode == .windows, let app = self.targetApp else { return }
             self.windowPanel.show(
                 items: self.items,
                 appIcon: app.icon,
                 selected: self.selection,
-                onPick: { [weak self] index in
-                    self?.pickWindowItem(at: index)
-                },
-                onHover: { [weak self] index in
-                    self?.hoverWindowItem(at: index)
-                }
+                onPick: { [weak self] in self?.pickWindowItem(at: $0) },
+                onHover: { [weak self] in self?.hoverWindowItem(at: $0) }
             )
         }
+        startOutsideClickMonitor()
+        return true
     }
 
     private func beginAppSwitching(reverse: Bool) -> Bool {
@@ -304,6 +300,7 @@ private extension EventTapManager {
         switcherApps = apps
         // 原生行为：cmd+tab 默认下一个应用，cmd+shift+tab 从最后一个（上一个使用的应用）开始
         appIndex = reverse ? apps.count - 1 : 1
+        // 默认高亮窗口列表第一行，松开即窗口级激活该窗口
         windowIndex = 0
         loadWindows(at: appIndex)
         mode = .apps
@@ -315,12 +312,23 @@ private extension EventTapManager {
         return true
     }
 
-    /// 面板显示调用收口：开启「延迟显示面板」时按住 100ms 才出现，
-    /// 快速点按（期间松开 cmd）不闪面板直接切换。闭包到点读取最新状态，
-    /// 延迟期间 tab 移动 / Esc 取消已生效；面板未显示时其 selectApp 等
-    /// 调用因空数据 guard 自然 no-op，无需特判
+    /// 面板显示统一收口：开启「延迟显示面板」时按住 100ms 才出现，
+    /// 快速点按（期间松开 cmd）不闪面板直接切换。display 到点执行；
+    /// 到点前选择已结束（松开/Esc/点击）则 work 已被 endSelection 取消
+    private func showPanel(_ display: @escaping () -> Void) {
+        guard Settings.delayedPanel else {
+            display()
+            return
+        }
+        let work = DispatchWorkItem(block: display)
+        panelShowWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.panelShowDelay, execute: work)
+    }
+
+    /// app 面板显示：闭包到点读取最新状态，延迟期间 tab 移动 / Esc 取消
+    /// 已生效；面板未显示时其 selectApp 等调用因空数据 guard 自然 no-op，无需特判
     private func showAppPanel() {
-        schedulePanelShow { [weak self] in
+        showPanel { [weak self] in
             guard let self, self.mode == .apps else { return }
             self.appPanel.show(
                 apps: self.switcherApps,
@@ -332,21 +340,10 @@ private extension EventTapManager {
                 onHoverApp: { [weak self] in self?.hoverApp(at: $0) },
                 onPickWindow: { [weak self] in self?.pickWindow(at: $0) },
                 onHoverWindow: { [weak self] in self?.hoverWindow(at: $0) },
-                onScrollApp: { [weak self] in self?.moveApp(by: $0) }
+                onScrollApp: { [weak self] in self?.moveApp(by: $0) },
+                onCancel: { [weak self] in self?.cancelSelection() }
             )
         }
-    }
-
-    /// 延迟显示收口（两个面板共用）：开启配置时面板延迟 100ms 出现，
-    /// 期间结束选择（松开 cmd / Esc / 点击外部）即取消，面板不出现
-    private func schedulePanelShow(_ show: @escaping () -> Void) {
-        guard Settings.delayedPanel else {
-            show()
-            return
-        }
-        let work = DispatchWorkItem(block: show)
-        panelShowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.panelShowDelay, execute: work)
     }
 
     /// 后台读 Dock 角标（AX 可跨线程，避免卡首按），主线程更新缓存与面板视图
@@ -425,8 +422,11 @@ private extension EventTapManager {
         guard !windows.isEmpty else { return }
 
         let count = windows.count
-        windowIndex = ((windowIndex + delta) % count + count) % count
-        appPanel.selectWindow(index: windowIndex)
+        // 未选窗口时首个方向键进入选择：向下选第一项，向上选最后一项
+        let base = windowIndex ?? (delta > 0 ? -1 : count)
+        let index = ((base + delta) % count + count) % count
+        windowIndex = index
+        appPanel.selectWindow(index: index)
     }
 
     /// 窗口列表惰性加载：只在应用首次被高亮时做 AX 枚举，保证首按 cmd+tab 的响应速度
@@ -439,7 +439,8 @@ private extension EventTapManager {
     private func pickApp(at index: Int) {
         guard mode == .apps, switcherApps.indices.contains(index) else { return }
         appIndex = index
-        windowIndex = 0
+        // 点击图标 = 应用级提交，不预设窗口
+        windowIndex = nil
         loadWindows(at: index)
         commitSelection()
     }
@@ -512,18 +513,25 @@ private extension EventTapManager {
                 return
             }
             let target = switcherApps[appIndex]
-            let window = target.windows.indices.contains(windowIndex)
-                ? target.windows[windowIndex]
-                : nil
+            let window = windowIndex.flatMap {
+                target.windows.indices.contains($0) ? target.windows[$0] : nil
+            }
             endSelection()
             DiagLog.log("commit", "apps → \(target.name)(\(target.app.processIdentifier)) "
-                + "windowIdx=\(windowIndex) window=\"\(window?.title ?? "nil")\" "
+                + "windowIdx=\(windowIndex.map(String.init) ?? "nil") window=\"\(window?.title ?? "nil")\" "
                 + "id=\(window?.cgWindowID.map(String.init) ?? "nil")")
             if let window {
+                // 显式选了窗口：窗口级激活，不做组提升（其他窗口保持原位）
                 windowMRU.noteFocus(window, pid: target.app.processIdentifier)
                 WindowActivator.activate(window, app: target.app)
             } else {
-                target.app.activate()
+                // 未选窗口：应用级激活，优先调出 MRU 第一（面板列表第一行）的窗口；
+                // 最小化窗口不指定（原生 cmd+tab 不恢复最小化），交系统决策
+                let preferred = target.windows.first { !$0.isMinimized }
+                if let preferred {
+                    windowMRU.noteFocus(preferred, pid: target.app.processIdentifier)
+                }
+                WindowActivator.activateApp(target.app, preferred: preferred)
             }
 
         case nil:
@@ -541,8 +549,8 @@ private extension EventTapManager {
         items = []
         targetApp = nil
         switcherApps = []
-        timeoutWork?.cancel()
-        timeoutWork = nil
+        modifierWatchTimer?.invalidate()
+        modifierWatchTimer = nil
         panelShowWork?.cancel()
         panelShowWork = nil
         stopOutsideClickMonitor()
@@ -550,11 +558,18 @@ private extension EventTapManager {
         appPanel.dismiss()
     }
 
-    /// 状态机异常兜底：面板滞留过久（如 modifier 状态丢失）自动收起
+    /// modifier 状态兜底：面板的正常关闭由松开 cmd 的 flagsChanged 驱动；
+    /// 该事件丢失（tap 异常）时轮询发现 cmd 已物理松开才收起。
+    /// 用户按住 cmd 长时间浏览不主动取消（旧 30s 硬超时已移除）
     private func startTimeout() {
-        let work = DispatchWorkItem { [weak self] in self?.cancelSelection() }
-        timeoutWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.selectionTimeout, execute: work)
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.modifierWatchInterval,
+                                         repeats: true) { [weak self] _ in
+            guard let self, self.mode != nil,
+                  !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
+            else { return }
+            self.cancelSelection()
+        }
+        modifierWatchTimer = timer
     }
 
     // MARK: 面板外点击取消
