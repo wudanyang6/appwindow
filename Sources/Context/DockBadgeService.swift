@@ -43,10 +43,4 @@ private extension AXUIElement {
     var statusLabel: String? {
         copyAttribute("AXStatusLabel") as? String
     }
-
-    /// dock item 的 subrole：AXApplicationDockItem 是运行中 app，
-    /// AXHandoffDockItem / AXFolderDockItem 等是非 app 条目
-    var subrole: String? {
-        copyAttribute(kAXSubroleAttribute) as? String
-    }
 }

@@ -43,11 +43,18 @@ final class EventTapManager {
     private var modifierWatchTimer: Timer?
     private var panelShowWork: DispatchWorkItem?
     private var outsideClickMonitor: Any?
+    // 方向键切换时的窗口枚举防抖：停在某应用 ~90ms 后才后台加载它的窗口，
+    // 避免每按一次方向键都同步做一次 AX 枚举（实测单次可达 250ms）卡住主线程
+    private var windowLoadWork: DispatchWorkItem?
+    // 面板外滚轮切应用的增量累加器：累到阈值走一步（与面板内图标行同一手感）
+    private var scrollAccumulator: CGFloat = 0
 
     // modifier 状态兜底轮询间隔：松开 cmd 的 flagsChanged 正常都会触发，
     // 轮询只在事件丢失（tap 异常）时才生效，无需高频
     private static let modifierWatchInterval: TimeInterval = 1
     private static let panelShowDelay: TimeInterval = 0.1
+    // 滚轮切应用的步进阈值，与 ScrollContainerView 一致
+    private static let scrollAppStepThreshold: CGFloat = 12
 
     init(panel: SwitchPanel) {
         self.windowPanel = panel
@@ -102,6 +109,7 @@ final class EventTapManager {
         let mask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.scrollWheel.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -150,9 +158,45 @@ private extension EventTapManager {
         case .keyUp:
             return handleKeyUp(event)
 
+        case .scrollWheel:
+            return handleScroll(event)
+
         default:
             return Unmanaged.passUnretained(event)
         }
+    }
+
+    /// 面板显示期间全局接管滚轮（不管指针在不在面板上、也不依赖面板视图自己收到事件，
+    /// 因此兼容 Mouse Fix 等把滚轮改写/直投目标进程的工具）：
+    /// - 指针在窗口列表上：滚列表
+    /// - 其它（图标行 / 间隙 / 面板外）：切换应用
+    /// 事件一律消费，避免下方应用同时被滚动
+    private func handleScroll(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard let mode, let ns = NSEvent(cgEvent: event) else { return Unmanaged.passUnretained(event) }
+
+        // pixelScrollDelta 已归一化：普通鼠标（行增量）与触摸板/精确设备（像素）统一为像素
+        let delta = ns.pixelScrollDelta
+        let point = NSEvent.mouseLocation
+
+        switch mode {
+        case .windows:
+            // 窗口模式只有列表，滚轮始终滚列表
+            windowPanel.scrollList(by: delta)
+        case .apps:
+            if appPanel.listContains(point) {
+                appPanel.scrollList(by: delta)
+            } else {
+                // 惯性阶段不参与切换，避免一次滑动甩过多应用；主动滑动与鼠标滚轮照常
+                guard ns.momentumPhase.isEmpty else { return nil }
+                scrollAccumulator += delta
+                if abs(scrollAccumulator) >= Self.scrollAppStepThreshold {
+                    let step = scrollAccumulator > 0 ? 1 : -1
+                    scrollAccumulator = 0
+                    moveApp(by: step)
+                }
+            }
+        }
+        return nil
     }
 
     private func handleKeyDown(_ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -410,10 +454,48 @@ private extension EventTapManager {
 
         appIndex = ((appIndex + delta) % count + count) % count
         windowIndex = 0
-        loadWindows(at: appIndex)
+        // 立即用已缓存的窗口渲染（未加载则为空），保证方向键即时响应；
+        // 未加载的窗口交给防抖后台加载，不阻塞主线程
         appPanel.selectApp(index: appIndex,
                            windows: switcherApps[appIndex].windows,
                            selectedWindow: windowIndex)
+        scheduleWindowLoad(at: appIndex)
+    }
+
+    /// 停在某应用短暂停顿后才加载其窗口：连续按方向键时不断取消重排，
+    /// 只有真正停下的那个应用会触发一次后台 AX 枚举
+    private func scheduleWindowLoad(at index: Int) {
+        windowLoadWork?.cancel()
+        guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else { return }
+        let work = DispatchWorkItem { [weak self] in self?.loadWindowsInBackground(at: index) }
+        windowLoadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: work)
+    }
+
+    /// 后台做重的 AX 窗口枚举，完成后回主线程；仍停在该应用才刷新列表。
+    /// MRU 快照/排序只在主线程（其状态只在主线程改）
+    private func loadWindowsInBackground(at index: Int) {
+        guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else { return }
+        let app = switcherApps[index].app
+        let pid = app.processIdentifier
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let raw = WindowListService.windows(of: app)
+            DispatchQueue.main.async {
+                guard let self, self.mode == .apps,
+                      let i = self.switcherApps.firstIndex(where: { $0.app.processIdentifier == pid }),
+                      !self.switcherApps[i].windowsLoaded else { return }
+                // 前台 app 的 z 序快照对齐（读 CGWindowList，快）
+                if pid == NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                    self.windowMRU.snapshot(app)
+                }
+                let ordered = self.windowMRU.ordered(raw, pid: pid)
+                self.switcherApps[i].windows = ordered
+                self.switcherApps[i].windowsLoaded = true
+                if self.appIndex == i {
+                    self.appPanel.selectApp(index: i, windows: ordered, selectedWindow: self.windowIndex)
+                }
+            }
+        }
     }
 
     private func moveWindow(by delta: Int) {
@@ -512,6 +594,9 @@ private extension EventTapManager {
                 endSelection()
                 return
             }
+            // 提交是一次性动作：若目标应用的窗口还没（异步）加载完，此处同步补一次，
+            // 保证按窗口 MRU 首窗提交，而不是退化成应用级激活
+            loadWindows(at: appIndex)
             let target = switcherApps[appIndex]
             let window = windowIndex.flatMap {
                 target.windows.indices.contains($0) ? target.windows[$0] : nil
@@ -549,10 +634,15 @@ private extension EventTapManager {
         items = []
         targetApp = nil
         switcherApps = []
+        scrollAccumulator = 0
         modifierWatchTimer?.invalidate()
         modifierWatchTimer = nil
         panelShowWork?.cancel()
         panelShowWork = nil
+        windowLoadWork?.cancel()
+        windowLoadWork = nil
+        // 图标缓存仅在本次会话内有效：清空后下次打开重新取用各应用当前图标，避免用到旧图标
+        AppIconCache.clear()
         stopOutsideClickMonitor()
         windowPanel.dismiss()
         appPanel.dismiss()

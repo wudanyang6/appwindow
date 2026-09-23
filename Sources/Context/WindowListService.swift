@@ -19,7 +19,30 @@ struct SwitcherApp {
     var windowsLoaded = false
 
     var name: String { app.localizedName ?? "App" }
-    var icon: NSImage? { app.icon }
+    // 经缓存的图标：切换器每次重渲染都新建图标视图，直接用 NSRunningApplication.icon
+    // 每次拿到的是未解码的多表示图像，重图标（iDev 有 32 个表示）首帧会空白闪烁。
+    // 缓存同一个 NSImage 对象复用即可：它的表示只解码一次、后续绘制直接命中
+    var icon: NSImage? { AppIconCache.icon(for: app) }
+}
+
+/// 应用图标缓存：按 pid 缓存同一个 NSImage 对象，避免每次渲染重新取用/解码。
+/// 只在**一次切换会话内**有效（会话结束调用 clear 清空），因此应用换了图标下次打开即刷新；
+/// 只在主线程访问（切换器构建与渲染都在主线程），无需加锁
+enum AppIconCache {
+    private static var cache: [pid_t: NSImage] = [:]
+
+    static func icon(for app: NSRunningApplication) -> NSImage? {
+        let pid = app.processIdentifier
+        if let cached = cache[pid] { return cached }
+        guard let image = app.icon else { return nil }
+        cache[pid] = image
+        return image
+    }
+
+    /// 切换会话结束时清空：下次打开面板重新取用各应用当前图标
+    static func clear() {
+        cache.removeAll()
+    }
 }
 
 /// 枚举应用的窗口：CGWindowList 提供可靠的 z-order，AX 提供标题与可激活的窗口引用，
@@ -54,8 +77,16 @@ enum WindowListService {
         // 目标应用无响应时限制单次 AX 调用的阻塞时间，避免事件流卡死
         AXUIElementSetMessagingTimeout(axApp, axTimeout)
 
-        let axWindows = axApp.windows
-        guard !axWindows.isEmpty else { return [] }
+        let rawWindows = axApp.windows
+        guard !rawWindows.isEmpty else { return [] }
+
+        // 剔除不是用户窗口的条目后再编号：否则标题回退编号会把幽灵行算进去（如「访达 3」「QQ音乐 2」）。
+        // hasStandardWindow：应用是否存在正常的 AXStandardWindow，用于安全剔除 AXUnknown 幽灵窗口
+        let auxiliary = auxiliaryWindowIDs(pid: app.processIdentifier)
+        let hasStandardWindow = rawWindows.contains { $0.subrole == standardWindowSubrole }
+        let axWindows = rawWindows.filter {
+            isUserWindow($0, auxiliary: auxiliary, hasStandardWindow: hasStandardWindow)
+        }
 
         let fallbackTitle = app.localizedName ?? "Window"
         let visible = visibleWindows(pid: app.processIdentifier)
@@ -121,20 +152,74 @@ enum WindowListService {
 
     /// 全部应用的可见窗口，z-order 排列（最前在最前）；诊断日志的 z 序快照复用
     static func allVisibleWindows() -> [(id: CGWindowID, bounds: CGRect, pid: pid_t)] {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+        cgWindows([.optionOnScreenOnly, .excludeDesktopElements])
+            .filter(\.isNormal)
+            .map { ($0.id, $0.bounds, $0.pid) }
+    }
+
+    /// CGWindowList 的一条记录；layer/alpha 是判断「这是不是一个普通窗口」的依据
+    private struct CGWindow {
+        let id: CGWindowID
+        let bounds: CGRect
+        let pid: pid_t
+        let layer: Int
+        let alpha: Double
+
+        /// 普通窗口：位于普通窗口层且不完全透明。
+        /// 最小化与应用隐藏（Cmd+H）只改 onscreen 标志，不动 layer 与 alpha，因此不会被误判
+        var isNormal: Bool { layer == 0 && alpha > 0 }
+    }
+
+    private static func cgWindows(_ option: CGWindowListOption) -> [CGWindow] {
+        guard let list = CGWindowListCopyWindowInfo(option, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
 
         return list.compactMap { info in
-            guard info[kCGWindowLayer as String] as? Int == 0,
-                  let id = info[kCGWindowNumber as String] as? Int,
+            guard let id = info[kCGWindowNumber as String] as? Int,
                   let pid = info[kCGWindowOwnerPID as String] as? Int,
                   let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
                   let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
             else { return nil }
-            return (CGWindowID(id), bounds, pid_t(pid))
+            // 字段缺失时按普通窗口处理：宁可多显示一行，也不误删真窗口
+            return CGWindow(
+                id: CGWindowID(id),
+                bounds: bounds,
+                pid: pid_t(pid),
+                layer: info[kCGWindowLayer as String] as? Int ?? 0,
+                alpha: info[kCGWindowAlpha as String] as? Double ?? 1
+            )
         }
+    }
+
+    /// AX 的窗口列表混着不是用户窗口的条目，展示出来就是幽灵行：
+    /// - Finder 的桌面（subrole=AXDesktop、没有 CG 窗口，标题回退成「访达 3」）
+    /// - iTerm2 的独立 tab bar（CG 侧是 layer 24 / alpha 0 的辅助层窗口，AX 却当普通窗口返回）
+    /// - QQ音乐 与真窗口完全重叠的 AXUnknown 覆盖窗口（CG 侧同样 layer 0 / alpha 1，无法靠 CG 区分）
+    private static func isUserWindow(_ ax: AXUIElement, auxiliary: Set<CGWindowID>,
+                                     hasStandardWindow: Bool) -> Bool {
+        if ax.subrole == desktopSubrole { return false }
+        // AXUnknown 是应用没有归类的辅助/覆盖窗口；仅当同一应用还存在正常的 AXStandardWindow
+        // 时才剔除，避免把「窗口全是 AXUnknown」的应用整个抹掉（宁可多显示也不误删真窗口）
+        if ax.subrole == unknownSubrole && hasStandardWindow { return false }
+        // 私有 API 不可用时 cgWindowID 恒为 nil，此时只能相信 AX 报的窗口列表
+        guard let id = ax.cgWindowID else { return true }
+        return !auxiliary.contains(id)
+    }
+
+    // 公开 SDK 无桌面 subrole 常量，用系统实际返回的字符串；其余用 SDK 常量避免拼写漂移
+    private static let desktopSubrole = "AXDesktop"
+    private static let unknownSubrole = kAXUnknownSubrole as String
+    private static let standardWindowSubrole = kAXStandardWindowSubrole as String
+
+    /// 指定应用名下「非普通窗口」的 CG 窗口 ID 集合（辅助层或完全透明）
+    private static func auxiliaryWindowIDs(pid: pid_t) -> Set<CGWindowID> {
+        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+        return Set(
+            cgWindows(options)
+                .filter { $0.pid == pid && !$0.isNormal }
+                .map(\.id)
+        )
     }
 
     /// 指定 app 在当前 Space 的可见窗口，z-order 排列（最前在最前）；

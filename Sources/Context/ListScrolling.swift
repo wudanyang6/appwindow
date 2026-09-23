@@ -67,6 +67,22 @@ final class ListScrollController {
     }
 }
 
+extension NSEvent {
+
+    /// 普通鼠标滚轮一格的等效像素位移：取一个窗口列表行高，
+    /// 使滚轮一格正好滚过一行（步进路径则一格切一个应用）
+    private static let wheelLineStep: CGFloat = 34
+
+    /// 滚轮增量归一化为像素：触摸板是精确设备、本就给像素；普通鼠标只给「行」增量
+    /// （实测一格 scrollingDeltaY = ±1），直接当像素用会几乎不动——必须先乘回行高
+    var pixelScrollDelta: CGFloat {
+        let raw = abs(scrollingDeltaY) >= abs(scrollingDeltaX)
+            ? scrollingDeltaY
+            : scrollingDeltaX
+        return hasPreciseScrollingDeltas ? raw : raw * Self.wheelLineStep
+    }
+}
+
 /// 面板容器：承载滚轮响应；毛玻璃背景是它的子层，透明度独立于内容调节
 final class ScrollContainerView: NSView {
 
@@ -79,9 +95,7 @@ final class ScrollContainerView: NSView {
     private var accumulatedDelta: CGFloat = 0
 
     override func scrollWheel(with event: NSEvent) {
-        let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
-            ? event.scrollingDeltaY
-            : event.scrollingDeltaX
+        let delta = event.pixelScrollDelta
 
         if let onScrollRaw {
             onScrollRaw(delta)

@@ -5,8 +5,9 @@ private enum PanelMetrics {
     static let width: CGFloat = 520
     static let rowHeight: CGFloat = 34
     static let edgeInset: CGFloat = 8
-    // 与 cmd+tab 面板统一圆角
-    static let cornerRadius: CGFloat = 26
+    // 托盘圆角与行高亮圆角同心：高亮半径 8 + 高亮距托盘边 edgeInset 8 = 16，
+    // 使托盘圆角与高亮圆角平行等距，视觉一致
+    static let cornerRadius: CGFloat = 16
     // 面板高度目标：屏幕可视高度的 70%
     static let heightRatio: CGFloat = 0.70
 
@@ -99,6 +100,11 @@ final class SwitchPanel {
         listScroller.ensureVisible(index: index, total: items.count)
     }
 
+    /// 供全局滚轮驱动（窗口模式滚轮始终滚列表）：由 EventTapManager 调用
+    func scrollList(by delta: CGFloat) {
+        listScroller.scroll(by: delta)
+    }
+
     func dismiss() {
         panels.forEach { $0.orderOut(nil) }
         panels = []
@@ -143,38 +149,9 @@ private extension SwitchPanel {
 
         let background = ScrollContainerView(frame: NSRect(x: 0, y: 0,
                                                            width: PanelMetrics.width, height: height))
-        background.wantsLayer = true
-        background.layer?.cornerRadius = PanelMetrics.cornerRadius
-        background.layer?.masksToBounds = true
+        // 材质与 cmd+tab 图标行同款，装配逻辑统一在 Theme
+        Theme.installBackground(on: background, cornerRadius: PanelMetrics.cornerRadius)
         background.onScrollRaw = { [weak self] in self?.listScroller.scroll(by: $0) }
-
-        // 背景层与 cmd+tab 图标行同款玻璃配置：毛玻璃打底提供模糊（alpha 控强度），
-        // clear 液态玻璃质感层在上，黑 tint 统一亮度
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: background.bounds)
-            glass.autoresizingMask = [.width, .height]
-            glass.style = .clear
-            glass.cornerRadius = PanelMetrics.cornerRadius
-            glass.tintColor = NSColor.black.withAlphaComponent(0.15)
-            let blur = NSVisualEffectView(frame: background.bounds)
-            blur.autoresizingMask = [.width, .height]
-            blur.material = .menu
-            blur.blendingMode = .behindWindow
-            blur.state = .active
-            blur.alphaValue = 0.75
-            background.addSubview(blur, positioned: .below, relativeTo: glass)
-            background.addSubview(glass)
-        } else {
-            let effect = NSVisualEffectView(frame: background.bounds)
-            effect.autoresizingMask = [.width, .height]
-            effect.material = .menu
-            effect.blendingMode = .behindWindow
-            effect.state = .active
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = PanelMetrics.cornerRadius
-            effect.alphaValue = Theme.backgroundAlpha
-            background.addSubview(effect)
-        }
 
         // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行。
         // 视口全宽：行占满面板宽（两侧边距可点击），高亮块由行内 contentInset 内缩

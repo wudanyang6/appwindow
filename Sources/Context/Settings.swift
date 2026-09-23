@@ -10,4 +10,11 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: "delayedPanelEnabled") }
         set { UserDefaults.standard.set(newValue, forKey: "delayedPanelEnabled") }
     }
+
+    /// 不使用玻璃效果：面板背景退化为纯毛玻璃，去掉 NSGlassEffectView 那层。
+    /// 液态玻璃的聚焦样式由系统按窗口 key 状态渲染、无法干预，出问题时由此开关整体绕开
+    static var glassDisabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "glassDisabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "glassDisabled") }
+    }
 }

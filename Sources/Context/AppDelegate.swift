@@ -95,6 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         delayedPanel.state = Settings.delayedPanel ? .on : .off
         menu.addItem(delayedPanel)
 
+        // 液态玻璃的聚焦渲染无法干预，面板观感异常时可以关掉这层只保留毛玻璃
+        let glassDisabled = NSMenuItem(
+            title: "不使用玻璃效果",
+            action: #selector(toggleGlassDisabled(_:)),
+            keyEquivalent: ""
+        )
+        glassDisabled.target = self
+        glassDisabled.state = Settings.glassDisabled ? .on : .off
+        menu.addItem(glassDisabled)
+
         // 排查工具：默认关闭，开启后写 ~/Library/Logs/AppWindow.log 供问题定位
         let diagLog = NSMenuItem(
             title: "诊断日志",
@@ -128,6 +138,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleDelayedPanel(_ item: NSMenuItem) {
         Settings.delayedPanel.toggle()
         item.state = Settings.delayedPanel ? .on : .off
+    }
+
+    /// 菜单打开状态下切换 state 即实时生效；面板每次显示都会重建背景，下次弹出即用新外观。
+    /// 持久化由 Settings.glassDisabled 的 setter 完成
+    @objc private func toggleGlassDisabled(_ item: NSMenuItem) {
+        Settings.glassDisabled.toggle()
+        item.state = Settings.glassDisabled ? .on : .off
     }
 
     /// 菜单打开状态下切换 state 即实时生效；持久化由 DiagLog.isEnabled 的 setter 完成

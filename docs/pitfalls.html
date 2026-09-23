@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AppWindow 开发踩坑复盘</title>
+<style>
+  :root {
+    --accent: #4a6bf0;
+    --accent-deep: #6d4df5;
+    --warn: #e5484d;
+    --text: #1d2129;
+    --text-secondary: #4e5969;
+    --text-tertiary: #86909c;
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --border: #e5e6eb;
+    --code-bg: #f2f3f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --text: #e8eaef;
+      --text-secondary: #a9b0bd;
+      --text-tertiary: #6b7280;
+      --bg: #17181c;
+      --card: #212227;
+      --border: #33343a;
+      --code-bg: #2a2b31;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+
+  .hero {
+    text-align: center;
+    padding: 64px 24px 40px;
+    background: linear-gradient(160deg, rgba(74,107,240,.10), rgba(109,77,245,.08) 60%, transparent);
+  }
+  .hero h1 { font-size: 32px; letter-spacing: -.5px; }
+  .hero p.sub { font-size: 16px; color: var(--text-secondary); margin-top: 10px; }
+  .hero .badges { margin-top: 14px; font-size: 13px; color: var(--text-tertiary); }
+  .hero .badges span { margin: 0 8px; }
+
+  section { padding: 40px 0 8px; }
+  h2 { font-size: 21px; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
+  h2::before { content: ""; width: 4px; height: 20px; border-radius: 2px; background: linear-gradient(var(--accent), var(--accent-deep)); }
+  h2 small { font-size: 13px; font-weight: 400; color: var(--text-tertiary); }
+
+  .pit {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px 24px;
+    margin-bottom: 16px;
+  }
+  .pit h3 { font-size: 16px; margin-bottom: 8px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .pit h3 .tag {
+    font-size: 11px;
+    font-weight: 500;
+    color: #fff;
+    background: var(--warn);
+    border-radius: 6px;
+    padding: 1px 8px;
+    white-space: nowrap;
+  }
+  .pit h3 .tag.ok { background: var(--accent); }
+  .pit p { font-size: 14px; color: var(--text-secondary); margin-top: 6px; }
+  .pit p b { color: var(--text); font-weight: 600; }
+  .pit code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    border-radius: 5px;
+    padding: 1px 6px;
+  }
+
+  .lesson {
+    margin: 32px 0 48px;
+    padding: 20px 24px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(74,107,240,.10), rgba(109,77,245,.08));
+    border: 1px solid var(--border);
+    font-size: 15px;
+  }
+  .lesson b { color: var(--accent); }
+
+  footer {
+    padding: 24px 0 48px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>AppWindow 开发踩坑复盘</h1>
+  <p class="sub">把 macOS 的 Cmd+Tab / Cmd+` 变成液态玻璃选择面板 —— 一天迭代 20+ 轮换来的教训</p>
+  <div class="badges">
+    <span>AppWindow v0.5.0</span><span>·</span><span>macOS 26 / Darwin 27</span><span>·</span><span>Accessibility API</span><span>·</span><span>NSGlassEffectView</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section>
+    <h2>结构性约束 <small>平台不给路，只能选接受或绕行</small></h2>
+
+    <div class="pit">
+      <h3>单 key window 模型 <span class="tag">无法绕过</span></h3>
+      <p>一个 app 同一时刻只有<b>一个 key window</b>，第二个 <code>makeKey</code> 必然抢走第一个的 key。多屏面板想让玻璃同时聚焦？做不到——这是后面一串坑的总根源。</p>
+    </div>
+
+    <div class="pit">
+      <h3>玻璃聚焦渲染是二值瞬变 <span class="tag">无公开接口</span></h3>
+      <p><code>NSGlassEffectView</code> 的聚焦/失焦样式由系统按窗口 key 状态渲染，SDK 头文件确认<b>没有「强制聚焦样式」的属性</b>。所有「给玻璃切换加过渡」的尝试都在对抗这一点。</p>
+    </div>
+
+    <div class="pit">
+      <h3>activate() 的窗口决策会覆盖预设焦点 <span class="tag">竞争中间态</span></h3>
+      <p>纯 AX（<code>setFocused</code>）对后台 app 无激活效果，必须 <code>app.activate()</code>；而 activate 自带窗口决策，激活后还得 refocus 纠正——决策窗口「闪现后消失」由此而来，窗口级路径无法根除。</p>
+    </div>
+
+    <div class="pit">
+      <h3>activate() 的组提升只覆盖单个显示器 <span class="tag">macOS 26 实测</span></h3>
+      <p>系统 cmd+tab 会把应用全部窗口带到前台，但直接调 <code>activate()</code> 在 macOS 26 上<b>只提升一个显示器</b>的窗口，副屏被盖的窗口不会浮上来。</p>
+    </div>
+
+    <div class="pit">
+      <h3>global monitor 只收本 app 外的事件 <span class="tag">事件边界</span></h3>
+      <p>「点击面板外取消」用 <code>addGlobalMonitorForEvents</code> 实现，但面板窗口内的<b>透明区域点击被本 app 窗口吞掉</b>——不取消也不透传，成了点击死区，只能自己垫透明点击层。</p>
+    </div>
+
+    <div class="pit">
+      <h3>makeKey 必然隐式激活 app <span class="tag">已接受</span></h3>
+      <p><code>makeKeyAndOrderFront</code> 实测必然隐式激活（<code>yieldActivation</code> 也拦不住），面板生命周期内 app 短暂 active，关闭即失活。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>方案死路 <small>多轮试错，方向本身不通</small></h2>
+
+    <div class="pit">
+      <h3>手动组提升：三轮翻车 <span class="tag">已整体放弃</span></h3>
+      <p><b>① 全量 raise</b>：打乱其他窗口相对层序，每次切换非选中窗口互换位置。<b>② CG z 序保序 raise</b>：被完全盖住的窗口「提到顶再被压回」闪现。<b>③ 遮挡感知 raise</b>（只提被其他 app 盖住的）：仍闪屏。根因：<code>AXRaise</code> 没有原子组操作，中间态必然可见。</p>
+    </div>
+
+    <div class="pit">
+      <h3>玻璃过渡动画：四轮翻车 <span class="tag">回到直接切换</span></h3>
+      <p><b>① 恒定压暗层</b>：难看（用户不要常驻背景）。<b>② 玻璃淡到 0 再切换</b>：玻璃完全消失露出纯模糊底，闪帧。<b>③ 淡到 30%</b>：alpha 稀释了玻璃的黑色 tint，「先亮一下再慢慢变暗」的脉冲。<b>④ 瞬时高光补偿</b>：也没能留住。结论：直接切换是接受态。</p>
+    </div>
+
+    <div class="pit">
+      <h3>跨屏单窗口：修完仍被回退 <span class="tag">环境不配合</span></h3>
+      <p>一个窗口横跨所有屏、一个 key 全屏聚焦——思路正确，但 <code>.screenSaver</code> 级窗口跨屏<b>只在主屏渲染</b>（WindowServer 不合成第二屏），空白区还有点击死区；降级窗口级修复后仍被要求回退双窗口方案。</p>
+    </div>
+
+    <div class="pit">
+      <h3>30 秒硬超时误杀 <span class="tag ok">已修复</span></h3>
+      <p>兜底「modifier 状态丢失」的超时把长时间按住浏览的面板杀掉了。改成每秒轮询 <code>CGEventSource.flagsState</code>：只有 cmd 物理已松开（且松开事件丢失）才收起，按住多久都不取消。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>交互细节 <small>一次性修掉</small></h2>
+
+    <div class="pit">
+      <h3>iPhone 接力条目覆盖 Dock 角标 <span class="tag ok">已修复</span></h3>
+      <p>iPhone 靠近时 Dock 出现 Handoff 条目（<code>AXHandoffDockItem</code>），title 与真实 app 同名（如「提醒事项」），<code>AXStatusLabel</code> 竟是设备标识 <code>com.apple.iphone-13-pro-1</code>——把真实未读数 4 覆盖成了一行字符串。按 subrole 过滤解决。</p>
+    </div>
+
+    <div class="pit">
+      <h3>列表行两侧点击不到 <span class="tag ok">已修复</span></h3>
+      <p>行视图被裁剪视口的 <code>edgeInset</code> 裁掉两侧，点击落在容器上无效。改成行全宽接收点击、高亮块用内缩子层绘制——点击区域与视觉宽度解耦。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>工程细节 <small>环境与语言的小刀子</small></h2>
+
+    <div class="pit">
+      <h3>Xcode license 拦截命令行编译 <span class="tag ok">绕过</span></h3>
+      <p>未同意 Xcode license 时 <code>swift build</code> 直接报错。<code>DEVELOPER_DIR=/Library/Developer/CommandLineTools</code> 指向 CLT 工具链即可绕过。</p>
+    </div>
+
+    <div class="pit">
+      <h3>Swift 类型小坑三连 <span class="tag ok">已修</span></h3>
+      <p>① 参数声明为 <code>NSPanel</code> 时看不到 <code>NonKeyPanel</code> 子类的方法；② 覆写 <code>init(frame:)</code> 忘写 <code>override</code>；③ <code>CGRect.union</code> 是实例方法，不能作为函数值传给 <code>reduce</code>，要写 <code>{ $0.union($1) }</code>。</p>
+    </div>
+
+    <div class="pit">
+      <h3>删 tag 被 Draft release「复活」 <span class="tag ok">已处理</span></h3>
+      <p>发版跳号时删了 tag，稍后 tag 又出现了——CI 在被取消前已创建 Draft release，<b>GitHub 会为 draft release 自动重建关联 tag</b>。必须先删 release 再删 tag；取消 CI 要赶在 release 步骤之前。</p>
+    </div>
+  </section>
+
+  <div class="lesson">
+    <b>最大的教训：</b>macOS 公开 API 对「窗口层级精细控制」几乎没有承诺——单 key、二值玻璃渲染、activate 的黑盒决策都是墙。撞墙时先查 SDK 头文件确认有没有门，没有就尽早接受系统的朴素行为，把精力花在用户能感知的地方。<br>
+    <b>可复用的结论</b>都已沉淀进项目记忆，下一轮迭代不再重走弯路。
+  </div>
+
+  <footer>
+    AppWindow · <a href="https://github.com/wudanyang6/appwindow">GitHub 源码</a> ·
+    <a href="https://github.com/wudanyang6/appwindow/releases/latest">下载最新版</a>
+  </footer>
+
+</div>
+
+</body>
+</html>

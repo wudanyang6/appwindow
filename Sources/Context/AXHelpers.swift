@@ -40,6 +40,13 @@ extension AXUIElement {
         (copyAttribute(kAXMinimizedAttribute) as? NSNumber)?.boolValue ?? false
     }
 
+    /// AX 条目的 subrole（AXStandardWindow、AXApplicationDockItem、AXDesktop 等）；
+    /// 属性缺失时为 nil。它并不稳定——实测同一个窗口在应用隐藏后从 AXStandardWindow
+    /// 变成 AXDialog——因此只用于识别明确特例，不要拿它做「必须等于某值」的白名单判断
+    var subrole: String? {
+        copyAttribute(kAXSubroleAttribute) as? String
+    }
+
     var position: CGPoint? {
         guard let value = copyAttribute(kAXPositionAttribute) else { return nil }
         var point = CGPoint.zero

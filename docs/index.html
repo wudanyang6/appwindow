@@ -209,7 +209,7 @@
     <div class="grid">
       <div class="card">
         <h3>Cmd + Tab · 应用切换器</h3>
-        <p>横向图标面板（尺寸贴近原生），高亮应用下方直接展开其窗口列表，默认选中最近使用的窗口；也可按 ↑↓ 显式选窗口，松开 Cmd 直达。</p>
+        <p>横向图标面板（尺寸贴近原生），选中图标下方显示应用名；其窗口列表在托盘下方展开，默认选中最近使用的窗口，也可按 ↑↓ 显式选窗口，松开 Cmd 直达。</p>
         <table style="margin-top:12px">
           <tr><th>按键</th><th>作用</th></tr>
           <tr><td><kbd>Tab</kbd> / <kbd>→</kbd></td><td>下一个应用</td></tr>
@@ -233,8 +233,9 @@
   <section>
     <h2>为效率而生</h2>
     <div class="grid">
-      <div class="card"><h3>🧊 液态玻璃面板</h3><p>macOS 26+ 采用 NSGlassEffectView 液态玻璃 + 毛玻璃模糊分层；图标行与窗口列表合并在同一窗口，共享聚焦玻璃样式。macOS 14/15 自动回退毛玻璃。</p></div>
-      <div class="card"><h3>🖱 完整鼠标交互</h3><p>悬停即高亮、点击即切换，列表行全宽可点（含两侧留白）；图标区滚轮切换应用，窗口列表滚轮连续滚动，面板空白处点击即取消。</p></div>
+      <div class="card"><h3>🧊 液态玻璃面板</h3><p>macOS 26+ 采用 NSGlassEffectView 液态玻璃；图标行与窗口列表合并在同一窗口，共享聚焦玻璃样式。菜单栏可一键「不使用玻璃效果」切换为毛玻璃；macOS 14/15 亦自动回退毛玻璃。</p></div>
+      <div class="card"><h3>🖱 完整鼠标交互</h3><p>悬停即高亮、点击即切换，列表行全宽可点（含两侧留白）；面板出现后滚轮全局切换应用（指针在面板外也生效），指针悬停在窗口列表上时则滚动列表；面板空白处点击即取消。鼠标滚轮与触摸板手感统一。</p></div>
+      <div class="card"><h3>🧹 干净窗口列表</h3><p>自动过滤掉不是用户窗口的条目——访达桌面、iTerm 独立标签栏、QQ音乐 的重叠辅助窗口等，避免列表里冒出「幽灵窗口」。</p></div>
       <div class="card"><h3>🖥 多屏同步显示</h3><p>每个屏幕同时显示一份面板，高亮与滚动状态跨屏实时同步；鼠标移到哪块屏，哪块屏的面板即转为聚焦玻璃样式。</p></div>
       <div class="card"><h3>🫧 延迟显示面板</h3><p>菜单栏开关（默认关）。开启后快速点按 <kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Cmd</kbd>+<kbd>`</kbd> 不闪面板直接切换，按住超过 100ms 面板才出现，对齐系统按住显示行为。</p></div>
       <div class="card"><h3>🎯 双路径激活</h3><p><kbd>Cmd</kbd>+<kbd>Tab</kbd> 默认直达应用最近使用的窗口；按 <kbd>↑</kbd><kbd>↓</kbd> 显式选窗口时只激活该窗口，其余窗口保持原位不动。</p></div>
@@ -258,7 +259,8 @@
 
   <footer>
     AppWindow · 以 <a href="https://github.com/wudanyang6/appwindow/blob/main/LICENSE">GPL-3.0</a> 协议开源 ·
-    <a href="https://github.com/wudanyang6/appwindow/releases">全部版本</a>
+    <a href="https://github.com/wudanyang6/appwindow/releases">全部版本</a> ·
+    <a href="pitfalls.html">开发踩坑复盘</a>
   </footer>
 
 </div>
