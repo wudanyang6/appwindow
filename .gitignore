@@ -5,3 +5,4 @@ dist/
 *.xcodeproj
 *.xcuserdata
 .omc/
+.popo.json
