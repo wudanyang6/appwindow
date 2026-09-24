@@ -21,9 +21,10 @@ private enum SwitcherMetrics {
     static let listCornerRadius: CGFloat = 16
     static let rowHeight: CGFloat = 34
     static let titleFont = NSFont.systemFont(ofSize: 13)
-    // 选中应用名称：托盘内图标下方的文字（字号 + 图标与文字之间的间距）
+    // 选中应用名称：托盘内图标下方的文字（字号 + 图标与文字之间的间距）。
+    // nameGap 调小 = 文字上移、更贴近图标；托盘高度随之收缩（上下留白居中对称，底部留白不变）
     static let nameFont = NSFont.systemFont(ofSize: 12, weight: .medium)
-    static let nameGap: CGFloat = 3
+    static let nameGap: CGFloat = 1
     // 名称距托盘底边的留白：同时也是图标上方留白（居中对称），调大即整体托盘变高
     static let nameBottomInset: CGFloat = 5
 }
@@ -611,8 +612,8 @@ private final class IconSlotView: NSView {
     private let highlightLayer = CALayer()
     // 槽位边长（图标随应用数量缩放），角标尺寸随它等比缩放
     private let slotSize: CGFloat
-    // 高亮相对槽位四周内缩的比例（缩小高亮范围，贴近图标可见方块）
-    private static let highlightInset: CGFloat = 0.06
+    // 高亮相对槽位四周内缩的比例：0.03 略大于图标可见方块（原 0.06 偏内收，用户反馈再外扩一点）
+    private static let highlightInset: CGFloat = 0.03
 
     init(index: Int, icon: NSImage?, iconSize: CGFloat, slotSize: CGFloat,
          hoverGate: MouseHoverGate,
@@ -647,7 +648,7 @@ private final class IconSlotView: NSView {
 
     override func layout() {
         super.layout()
-        // 高亮内缩到贴近图标可见方块；半径取边长 28%（比图标圆角更大更圆），
+        // 高亮内缩到略大于图标可见方块；半径取边长 28%（比图标圆角更大更圆），
         // 配合 init 里的 .continuous 连续曲线，弧度顺滑
         let inset = bounds.width * Self.highlightInset
         highlightLayer.frame = bounds.insetBy(dx: inset, dy: inset)
