@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 生成 Release 变更列表要读上一个 tag，浅克隆拿不到 tag 与历史
+          fetch-depth: 0
 
       - name: Build & package .app
         run: |
@@ -31,6 +34,24 @@ jobs:
         with:
           name: AppWindow-dmg
           path: dist/*.dmg
+
+      # Release 正文的「本次变更」：上一个 tag 到本 tag 的提交主题。
+      # 仓库没有 PR，generate_release_notes 抓不到内容，只能自己从提交生成。
+      # continue-on-error：变更列表生成失败也不能挡住发版
+      - name: Changelog
+        id: changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        run: |
+          previous=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then range="${previous}..HEAD"; else range="-n 20"; fi
+          notes=$(git log ${range} --no-merges --invert-grep --grep='^chore(release)' --pretty='- %s')
+          if [ -z "$notes" ]; then notes='- （本次无用户可见变更）'; fi
+          {
+            echo "notes<<CHANGELOG_EOF"
+            echo "$notes"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -49,3 +70,7 @@ jobs:
             - **终端一行**：`xattr -dr com.apple.quarantine /Applications/AppWindow.app`
 
             首次运行还需在 **系统设置 → 隐私与安全性 → 辅助功能** 勾选 AppWindow。
+
+            ## 本次变更
+
+            ${{ steps.changelog.outputs.notes }}
