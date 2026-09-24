@@ -270,6 +270,9 @@ private extension AppSwitcherPanel {
             // 间隙保持透明（与原双面板间的屏幕缝隙视觉等价）
             var union = icon.frame
             if let list { union = union.union(list.frame) }
+            // 原点取整像素：列表随高亮换宽度时 union.minX 会带小数，窗口服务器逐帧把它对齐到
+            // 不同像素，使本应固定的图标行左右轻微位移；integral 取含原矩形的整数矩形、不裁切内容
+            union = union.integral
 
             let root = NSView(frame: NSRect(x: 0, y: 0, width: union.width, height: union.height))
             icon.container.frame = relativeFrame(icon.frame, in: union)
