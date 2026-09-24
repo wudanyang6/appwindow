@@ -43,7 +43,12 @@
 
 从 [Releases](../../releases) 下载最新的 DMG，打开后将 AppWindow 拖入 Applications。
 
-> 首次运行需要在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 AppWindow（菜单栏图标可直达）。若打开时被 Gatekeeper 拦截，请右键 → 打开。
+> 首次运行需要在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 AppWindow（菜单栏图标可直达）。
+
+**首次打开提示「无法验证"AppWindow.app"是否包含恶意软件」时**（macOS 15 / 26 上右键「打开」已失效），任选其一放行一次即可，之后正常使用：
+
+1. 图形界面：在提示框点「完成」，再打开 系统设置 → 隐私与安全性，在底部「安全性」区点「仍要打开」
+2. 终端一行：`xattr -dr com.apple.quarantine /Applications/AppWindow.app`
 
 ### 源码构建
 
