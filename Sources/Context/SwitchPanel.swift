@@ -35,7 +35,7 @@ final class SwitchPanel {
     private var arrowsPerScreen: [(up: NSImageView, down: NSImageView)] = []
 
     /// 显示面板并高亮 initialSelected 对应的行。
-    /// onHover 在鼠标悬停行时回调（面板内部已同步视觉高亮），调用方负责同步提交状态。
+    /// onHover 在鼠标悬停行时回调（面板内部已同步视觉高亮），调用方负责同步自己的光标状态。
     func show(items: [WindowItem], appIcon: NSImage?,
               selected initialSelected: Int,
               onPick: @escaping (Int) -> Void,

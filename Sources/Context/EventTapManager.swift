@@ -2,9 +2,10 @@ import AppKit
 import Carbon.HIToolbox
 
 /// 全局键盘状态机，两种互斥的选择模式：
-/// - cmd+`：当前应用的窗口列表（SwitchPanel）
-/// - cmd+tab：应用切换器，高亮应用下方可选窗口（AppSwitcherPanel）
-/// 松开 cmd 提交切换。事件 tap 挂在 main runloop 上，回调与状态全部在主线程，无需加锁。
+/// - cmd+`：当前应用的窗口列表（SwitchPanel）。**每按一次立即切换**到下一个窗口，
+///   刚离开的窗口沉到循环队尾（原生 cmd+` 的循环栈），松开 cmd 只收面板
+/// - cmd+tab：应用切换器，高亮应用下方可选窗口（AppSwitcherPanel），松开 cmd 提交
+/// 事件 tap 挂在 main runloop 上，回调与状态全部在主线程，无需加锁。
 final class EventTapManager {
 
     private enum Mode {
@@ -21,6 +22,7 @@ final class EventTapManager {
 
     // windows 模式状态
     private var items: [WindowItem] = []
+    // 光标 = 当前所在窗口在列表中的下标；hover 只移动它不切换，按键 / 点击同时切换
     private var selection = 0
     private var targetApp: NSRunningApplication?
 
@@ -150,7 +152,9 @@ private extension EventTapManager {
         case .flagsChanged:
             // flagsChanged 必须透传，否则系统修饰键状态会与物理按键错位
             if mode != nil && !event.flags.contains(.maskCommand) {
-                commitSelection()
+                // windows 模式（cmd+`）是立即切换：切换已在每次按键时完成，这里只收面板；
+                // apps 模式（cmd+tab）仍是「松开 Cmd 提交」
+                if mode == .windows { endSelection() } else { commitSelection() }
             }
             return Unmanaged.passUnretained(event)
 
@@ -229,15 +233,16 @@ private extension EventTapManager {
         case .windows:
             switch keyCode {
             case kVK_ANSI_Grave where hasCmd:
-                moveSelection(by: 1)
-                return nil
-            case kVK_UpArrow:
-                moveSelection(by: -1)
+                stepWindow(by: 1)
                 return nil
             case kVK_DownArrow:
-                moveSelection(by: 1)
+                stepWindow(by: 1)
+                return nil
+            case kVK_UpArrow:
+                stepWindow(by: -1)
                 return nil
             case kVK_Escape:
+                // 立即切换模型下 Esc 只能停止轮换（已发生的切换不回退，与原生 cmd+` 一致）
                 cancelSelection()
                 return nil
             case kVK_Tab:
@@ -318,7 +323,7 @@ private extension EventTapManager {
         targetApp = app
         startTimeout()
 
-        // 延迟闭包到点读最新 selection（延迟期间 cmd+` 移动高亮已生效）
+        // 延迟闭包到点读最新 selection（延迟期间 cmd+` 已经真切换过，光标即当前窗口）
         showPanel { [weak self] in
             guard let self, self.mode == .windows, let app = self.targetApp else { return }
             self.windowPanel.show(
@@ -330,6 +335,8 @@ private extension EventTapManager {
             )
         }
         startOutsideClickMonitor()
+        // 立即切换：首次按下就前进到下一个窗口，与后续每次按键走同一条路径
+        activateWindowItem(at: selection)
         return true
     }
 
@@ -589,73 +596,72 @@ private extension EventTapManager {
 
     // MARK: windows 模式操作
 
-    private func pickWindowItem(at index: Int) {
-        guard mode == .windows, items.indices.contains(index) else { return }
+    /// 立即切到列表第 index 项：激活 + 循环栈旋转（目标到队首、刚用过的沉底）+ 高亮同步。
+    /// cmd+` 的首次按键、后续每次按键、↑↓、点击行都收敛到这一条路径
+    private func activateWindowItem(at index: Int) {
+        guard mode == .windows, items.indices.contains(index), let app = targetApp else { return }
+        let item = items[index]
         selection = index
-        commitSelection()
+        windowPanel.select(index: index)
+        DiagLog.log("activate-window", "\"\(item.title)\" idx=\(index) "
+            + "id=\(item.cgWindowID.map(String.init) ?? "nil")")
+        // 目标窗口可能尚不可见（最小化/跨 Space），失活快照看不到，激活时立即记入 MRU
+        windowMRU.rotate(items, to: index, pid: app.processIdentifier)
+        WindowActivator.activate(item, app: app)
     }
 
-    /// 鼠标悬停窗口行：同步提交状态，松开 cmd 时切换到悬停高亮的窗口
+    /// 前进 / 后退一格并立即切换：cmd+` 不再有「只移动高亮、松开 Cmd 才提交」的两段式
+    private func stepWindow(by delta: Int) {
+        guard !items.isEmpty else { return }
+        let count = items.count
+        activateWindowItem(at: ((selection + delta) % count + count) % count)
+    }
+
+    /// 点击窗口行：立即切到该窗口并收起面板（一次点击 = 一次完整选择）
+    private func pickWindowItem(at index: Int) {
+        guard mode == .windows, items.indices.contains(index) else { return }
+        activateWindowItem(at: index)
+        endSelection()
+    }
+
+    /// 鼠标悬停窗口行：只移动光标不切换，下一次 cmd+` / ↑↓ 从这里继续
     private func hoverWindowItem(at index: Int) {
         guard mode == .windows, items.indices.contains(index) else { return }
         selection = index
     }
 
-    private func moveSelection(by delta: Int) {
-        guard !items.isEmpty else { return }
-        let count = items.count
-        selection = ((selection + delta) % count + count) % count
-        windowPanel.select(index: selection)
-    }
-
     // MARK: 提交与收尾
 
+    /// cmd+tab 的提交（松开 Cmd 生效）。windows 模式（cmd+`）是立即切换，
+    /// 没有提交动作——每次按键已在 activateWindowItem 里完成切换
     private func commitSelection() {
-        switch mode {
-        case .windows:
-            guard items.indices.contains(selection), let app = targetApp else {
-                endSelection()
-                return
-            }
-            let item = items[selection]
+        guard mode == .apps, switcherApps.indices.contains(appIndex) else {
             endSelection()
-            DiagLog.log("commit", "windows → \"\(item.title)\" idx=\(selection) id=\(item.cgWindowID.map(String.init) ?? "nil")")
-            // 目标窗口可能尚不可见（最小化/跨 Space），失活快照看不到，提交时立即记入 MRU
-            windowMRU.noteFocus(item, pid: app.processIdentifier)
-            WindowActivator.activate(item, app: app)
-
-        case .apps:
-            guard switcherApps.indices.contains(appIndex) else {
-                endSelection()
-                return
+            return
+        }
+        // 提交是一次性动作：若目标应用的窗口还没（异步）加载完，此处同步补一次，
+        // 保证按窗口 MRU 首窗提交，而不是退化成应用级激活
+        loadWindows(at: appIndex)
+        let target = switcherApps[appIndex]
+        let window = windowIndex.flatMap {
+            target.windows.indices.contains($0) ? target.windows[$0] : nil
+        }
+        endSelection()
+        DiagLog.log("commit", "apps → \(target.name)(\(target.app.processIdentifier)) "
+            + "windowIdx=\(windowIndex.map(String.init) ?? "nil") window=\"\(window?.title ?? "nil")\" "
+            + "id=\(window?.cgWindowID.map(String.init) ?? "nil")")
+        if let window {
+            // 显式选了窗口：窗口级激活，不做组提升（其他窗口保持原位）
+            windowMRU.noteFocus(window, pid: target.app.processIdentifier)
+            WindowActivator.activate(window, app: target.app)
+        } else {
+            // 未选窗口：应用级激活，优先调出 MRU 第一（面板列表第一行）的窗口；
+            // 最小化窗口不指定（原生 cmd+tab 不恢复最小化），交系统决策
+            let preferred = target.windows.first { !$0.isMinimized }
+            if let preferred {
+                windowMRU.noteFocus(preferred, pid: target.app.processIdentifier)
             }
-            // 提交是一次性动作：若目标应用的窗口还没（异步）加载完，此处同步补一次，
-            // 保证按窗口 MRU 首窗提交，而不是退化成应用级激活
-            loadWindows(at: appIndex)
-            let target = switcherApps[appIndex]
-            let window = windowIndex.flatMap {
-                target.windows.indices.contains($0) ? target.windows[$0] : nil
-            }
-            endSelection()
-            DiagLog.log("commit", "apps → \(target.name)(\(target.app.processIdentifier)) "
-                + "windowIdx=\(windowIndex.map(String.init) ?? "nil") window=\"\(window?.title ?? "nil")\" "
-                + "id=\(window?.cgWindowID.map(String.init) ?? "nil")")
-            if let window {
-                // 显式选了窗口：窗口级激活，不做组提升（其他窗口保持原位）
-                windowMRU.noteFocus(window, pid: target.app.processIdentifier)
-                WindowActivator.activate(window, app: target.app)
-            } else {
-                // 未选窗口：应用级激活，优先调出 MRU 第一（面板列表第一行）的窗口；
-                // 最小化窗口不指定（原生 cmd+tab 不恢复最小化），交系统决策
-                let preferred = target.windows.first { !$0.isMinimized }
-                if let preferred {
-                    windowMRU.noteFocus(preferred, pid: target.app.processIdentifier)
-                }
-                WindowActivator.activateApp(target.app, preferred: preferred)
-            }
-
-        case nil:
-            break
+            WindowActivator.activateApp(target.app, preferred: preferred)
         }
     }
 
