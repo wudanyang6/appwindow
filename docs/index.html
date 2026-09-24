@@ -249,10 +249,11 @@
     <h2>安装步骤</h2>
     <div class="card">
       <ol class="steps">
-        <li>下载并打开 DMG，将 AppWindow 拖入 Applications 文件夹<small>若被 Gatekeeper 拦截，右键 AppWindow → 打开</small></li>
+        <li>下载并打开 DMG，将 AppWindow 拖入 Applications 文件夹<small>应用未经 Apple 公证，首次打开会提示「无法验证」，按下方任一方法放行一次</small></li>
         <li>启动后授权「辅助功能」权限<small>菜单栏图标 → 打开系统设置 → 隐私与安全性 → 辅助功能，勾选 AppWindow</small></li>
         <li>按 <kbd>Cmd</kbd>+<kbd>Tab</kbd> 或 <kbd>Cmd</kbd>+<kbd>`</kbd> 开始使用</li>
       </ol>
+      <div class="note">首次打开提示「无法验证"AppWindow.app"是否包含恶意软件」时（macOS 15 / 26 上右键「打开」已失效），任选其一放行一次即可，之后正常使用：<br>① 图形界面：在提示框点「完成」，再打开 <strong>系统设置 → 隐私与安全性</strong>，在底部「安全性」区点 <strong>仍要打开</strong>；<br>② 终端一行：<code>xattr -dr com.apple.quarantine /Applications/AppWindow.app</code></div>
       <div class="note">提示：AppWindow 需要辅助功能权限来监听快捷键与切换窗口，仅使用 Accessibility API 读取窗口标题，无需屏幕录制权限。</div>
     </div>
   </section>

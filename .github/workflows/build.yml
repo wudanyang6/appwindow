@@ -37,3 +37,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
+          generate_release_notes: true
+          body: |
+            ## ⚠️ 首次打开说明（未公证应用）
+
+            本应用未经 Apple 付费公证，从浏览器下载后 macOS 会提示
+            **「无法验证"AppWindow.app"是否包含恶意软件」**。按任一方法放行一次即可，之后正常使用。
+            （注意：macOS 15 / 26 上「右键 → 打开」已失效）
+
+            - **图形界面**：拖进「应用程序」后双击 → 提示点「完成」→ 打开 **系统设置 → 隐私与安全性**，滑到底部点 **仍要打开**
+            - **终端一行**：`xattr -dr com.apple.quarantine /Applications/AppWindow.app`
+
+            首次运行还需在 **系统设置 → 隐私与安全性 → 辅助功能** 勾选 AppWindow。
