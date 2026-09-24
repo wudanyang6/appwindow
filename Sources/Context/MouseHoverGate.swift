@@ -15,6 +15,11 @@ final class MouseHoverGate {
         anchor = NSEvent.mouseLocation
     }
 
+    /// 注入初始锚点：供单测构造确定性场景（生产用无参 init 取实时光标位置）
+    init(anchor: NSPoint) {
+        self.anchor = anchor
+    }
+
     /// 事件位置距锚点超过阈值才返回 true；
     /// 锚点仅在判定为移动时更新，极慢的连续移动靠累积位移触发
     func hasMoved(to screenLocation: NSPoint) -> Bool {

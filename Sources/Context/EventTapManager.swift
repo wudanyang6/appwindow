@@ -55,6 +55,8 @@ final class EventTapManager {
     private static let panelShowDelay: TimeInterval = 0.1
     // 滚轮切应用的步进阈值，与 ScrollContainerView 一致
     private static let scrollAppStepThreshold: CGFloat = 12
+    // keyUp 里判断是否本模式消费的方向 / Esc 键：tap 收全系统按键，用 static 避免每次释放都新建数组
+    private static let modeConsumedKeyUps: Set<Int> = [kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Escape]
 
     init(panel: SwitchPanel) {
         self.windowPanel = panel
@@ -284,7 +286,6 @@ private extension EventTapManager {
     private func handleKeyUp(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
-        let handledInMode = [kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Escape]
 
         if keyCode == kVK_ANSI_Grave && flags.contains(.maskCommand) {
             return nil
@@ -292,7 +293,7 @@ private extension EventTapManager {
         if keyCode == kVK_Tab && flags.contains(.maskCommand) {
             return nil
         }
-        if mode != nil && handledInMode.contains(keyCode) {
+        if mode != nil && Self.modeConsumedKeyUps.contains(keyCode) {
             return nil
         }
         return Unmanaged.passUnretained(event)
@@ -346,9 +347,13 @@ private extension EventTapManager {
         appIndex = reverse ? apps.count - 1 : 1
         // 默认高亮窗口列表第一行，松开即窗口级激活该窗口
         windowIndex = 0
-        loadWindows(at: appIndex)
         mode = .apps
         startTimeout()
+
+        // 首个应用的窗口也走后台枚举：不在事件 tap 回调里同步做 AX（慢应用可达数百 ms，
+        // 会卡首按、还可能触发 tapDisabledByTimeout 丢事件）。列表首帧可能短暂为空再填充，
+        // 与方向键 / 预取一致；快速点按的提交路径 commitSelection 另有同步兜底
+        loadWindowsInBackground(at: appIndex)
 
         showAppPanel()
         refreshDockBadges()
@@ -387,6 +392,8 @@ private extension EventTapManager {
                 onScrollApp: { [weak self] in self?.moveApp(by: $0) },
                 onCancel: { [weak self] in self?.cancelSelection() }
             )
+            // 面板已显示 = 用户在浏览，后台预取其余应用窗口，抹平「首次切到某图标才枚举」的延迟
+            self.prewarmWindows()
         }
     }
 
@@ -451,15 +458,20 @@ private extension EventTapManager {
     private func moveApp(by delta: Int) {
         let count = switcherApps.count
         guard count > 0 else { return }
+        focusApp(at: ((appIndex + delta) % count + count) % count)
+    }
 
-        appIndex = ((appIndex + delta) % count + count) % count
+    /// 高亮到某应用并刷新其窗口列表：立即用已缓存窗口渲染（未加载则先空），
+    /// AX 枚举一律交给防抖后台加载，绝不在主线程同步枚举——否则下拉列表首次显示会卡顿。
+    /// 方向键与鼠标悬停共用这一条非阻塞路径，手感一致
+    private func focusApp(at index: Int) {
+        guard switcherApps.indices.contains(index) else { return }
+        appIndex = index
         windowIndex = 0
-        // 立即用已缓存的窗口渲染（未加载则为空），保证方向键即时响应；
-        // 未加载的窗口交给防抖后台加载，不阻塞主线程
         appPanel.selectApp(index: appIndex,
                            windows: switcherApps[appIndex].windows,
                            selectedWindow: windowIndex)
-        scheduleWindowLoad(at: appIndex)
+        scheduleWindowLoad(at: index)
     }
 
     /// 停在某应用短暂停顿后才加载其窗口：连续按方向键时不断取消重排，
@@ -472,28 +484,56 @@ private extension EventTapManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: work)
     }
 
-    /// 后台做重的 AX 窗口枚举，完成后回主线程；仍停在该应用才刷新列表。
-    /// MRU 快照/排序只在主线程（其状态只在主线程改）
+    /// 后台做重的 AX 窗口枚举，完成后回主线程刷新（防抖触发，用于方向键 / 悬停切换）
     private func loadWindowsInBackground(at index: Int) {
         guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else { return }
         let app = switcherApps[index].app
         let pid = app.processIdentifier
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let raw = WindowListService.windows(of: app)
+            DispatchQueue.main.async { self?.applyLoadedWindows(raw, pid: pid, app: app) }
+        }
+    }
+
+    /// 后台枚举结果写回主线程状态与面板：仍在 apps 模式、目标仍在且未加载才生效。
+    /// MRU 快照/排序只在主线程（其状态只在主线程改）
+    private func applyLoadedWindows(_ raw: [WindowItem], pid: pid_t, app: NSRunningApplication) {
+        guard mode == .apps,
+              let i = switcherApps.firstIndex(where: { $0.app.processIdentifier == pid }),
+              !switcherApps[i].windowsLoaded else { return }
+        // 前台 app 的 z 序快照对齐（读 CGWindowList，快）
+        if pid == NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            windowMRU.snapshot(app)
+        }
+        let ordered = windowMRU.ordered(raw, pid: pid)
+        switcherApps[i].windows = ordered
+        switcherApps[i].windowsLoaded = true
+        if appIndex == i {
+            appPanel.selectApp(index: i, windows: ordered, selectedWindow: windowIndex)
+        }
+    }
+
+    /// 面板显示后在后台预取所有尚未加载的应用窗口：等用户悬停 / 方向键切到某应用时
+    /// 多半已缓存，下拉列表首次显示即时。低优先级 + 顺序链式（一次只枚举一个），
+    /// 避免一次性对所有应用发起 AX 调用形成风暴；每步在主线程校验仍在浏览，会话结束即止
+    private func prewarmWindows() {
+        prewarmNext(switcherApps.indices.filter { !switcherApps[$0].windowsLoaded })
+    }
+
+    private func prewarmNext(_ queue: [Int]) {
+        guard mode == .apps, let index = queue.first else { return }
+        let rest = Array(queue.dropFirst())
+        guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else {
+            prewarmNext(rest)
+            return
+        }
+        let app = switcherApps[index].app
+        let pid = app.processIdentifier
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let raw = WindowListService.windows(of: app)
             DispatchQueue.main.async {
-                guard let self, self.mode == .apps,
-                      let i = self.switcherApps.firstIndex(where: { $0.app.processIdentifier == pid }),
-                      !self.switcherApps[i].windowsLoaded else { return }
-                // 前台 app 的 z 序快照对齐（读 CGWindowList，快）
-                if pid == NSWorkspace.shared.frontmostApplication?.processIdentifier {
-                    self.windowMRU.snapshot(app)
-                }
-                let ordered = self.windowMRU.ordered(raw, pid: pid)
-                self.switcherApps[i].windows = ordered
-                self.switcherApps[i].windowsLoaded = true
-                if self.appIndex == i {
-                    self.appPanel.selectApp(index: i, windows: ordered, selectedWindow: self.windowIndex)
-                }
+                self?.applyLoadedWindows(raw, pid: pid, app: app)
+                self?.prewarmNext(rest)
             }
         }
     }
@@ -527,15 +567,10 @@ private extension EventTapManager {
         commitSelection()
     }
 
-    /// 鼠标悬停图标：只移动高亮，不提交
+    /// 鼠标悬停图标：只移动高亮，不提交（与方向键共用非阻塞加载路径，首次悬停不再卡）
     private func hoverApp(at index: Int) {
         guard mode == .apps, switcherApps.indices.contains(index), index != appIndex else { return }
-        appIndex = index
-        windowIndex = 0
-        loadWindows(at: index)
-        appPanel.selectApp(index: appIndex,
-                           windows: switcherApps[appIndex].windows,
-                           selectedWindow: windowIndex)
+        focusApp(at: index)
     }
 
     private func pickWindow(at index: Int) {

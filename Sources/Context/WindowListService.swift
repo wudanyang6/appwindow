@@ -55,8 +55,10 @@ enum WindowListService {
     /// 无可见窗口的应用（最小化/隐藏）沉底。
     static func switcherApps() -> [SwitcherApp] {
         let selfPID = ProcessInfo.processInfo.processIdentifier
+        // 刚退出的应用在 runningApplications 里会短暂残留（终止是异步的），此刻其 .icon 已为 nil，
+        // 不过滤就会以空白图标出现在面板上；isTerminated 已翻真，据此剔除
         let running = NSWorkspace.shared.runningApplications.filter {
-            $0.activationPolicy == .regular && $0.processIdentifier != selfPID
+            $0.activationPolicy == .regular && $0.processIdentifier != selfPID && !$0.isTerminated
         }
         let byPID = Dictionary(uniqueKeysWithValues: running.map { ($0.processIdentifier, $0) })
 
@@ -80,26 +82,20 @@ enum WindowListService {
         let rawWindows = axApp.windows
         guard !rawWindows.isEmpty else { return [] }
 
+        // 每个 AX 窗口一次批量取属性（title/document/subrole/minimized/position/size）+ 一次
+        // 私有 cgWindowID：把此前逐属性 ~5-8 次跨进程往返压到每窗口约 2 次
+        let infos = rawWindows.map(AXWindowInfo.init)
+
         // 剔除不是用户窗口的条目后再编号：否则标题回退编号会把幽灵行算进去（如「访达 3」「QQ音乐 2」）。
         // hasStandardWindow：应用是否存在正常的 AXStandardWindow，用于安全剔除 AXUnknown 幽灵窗口
         let auxiliary = auxiliaryWindowIDs(pid: app.processIdentifier)
-        let hasStandardWindow = rawWindows.contains { $0.subrole == standardWindowSubrole }
-        let axWindows = rawWindows.filter {
+        let hasStandardWindow = infos.contains { $0.subrole == standardWindowSubrole }
+        let userInfos = infos.filter {
             isUserWindow($0, auxiliary: auxiliary, hasStandardWindow: hasStandardWindow)
         }
 
         let fallbackTitle = app.localizedName ?? "Window"
         let visible = visibleWindows(pid: app.processIdentifier)
-
-        var entries: [Entry] = axWindows.enumerated().map { index, ax -> Entry in
-            Entry(
-                axWindow: ax,
-                title: title(of: ax, fallback: fallbackTitle, index: index),
-                isMinimized: ax.isMinimized,
-                cgWindowID: ax.cgWindowID,
-                bounds: CGRect(origin: ax.position ?? .zero, size: ax.size ?? .zero)
-            )
-        }
 
         let byID = Dictionary(uniqueKeysWithValues: visible.enumerated().map { ($1.id, $0) })
         // CGRect 的 Hashable 依赖 macOS 15+，这里用字符串做 bounds 匹配的 key
@@ -108,31 +104,63 @@ enum WindowListService {
             byBounds[boundsKey(window.bounds)] = index
         }
 
-        func rank(_ entry: Entry) -> Int {
-            if let id = entry.cgWindowID, let rank = byID[id] { return rank }
-            // 匹配不上的（如最小化窗口，不在 OnScreenOnly 列表里）沉底
-            return byBounds[boundsKey(entry.bounds)] ?? Int.max
+        // 匹配不上的（如最小化窗口，不在 OnScreenOnly 列表里）沉底
+        func rank(id: CGWindowID?, bounds: CGRect) -> Int {
+            if let id, let rank = byID[id] { return rank }
+            return byBounds[boundsKey(bounds)] ?? Int.max
         }
 
-        entries.sort { rank($0) < rank($1) }
-        // 不截断：选择面板的视口 + 滚动机制可承载任意行数
-        return entries.map { entry in
-            WindowItem(
-                axWindow: entry.axWindow,
-                title: entry.title,
-                isMinimized: entry.isMinimized,
-                cgWindowID: entry.cgWindowID,
-                isOnScreen: rank(entry) != Int.max
-            )
+        // 标题回退编号按剔除后的次序（enumerated），排序在其后不影响编号
+        let ranked = userInfos.enumerated().map { index, info -> (item: WindowItem, rank: Int) in
+            let bounds = CGRect(origin: info.position ?? .zero, size: info.size ?? .zero)
+            let r = rank(id: info.cgWindowID, bounds: bounds)
+            return (WindowItem(axWindow: info.window,
+                               title: info.title(fallback: fallbackTitle, index: index),
+                               isMinimized: info.isMinimized,
+                               cgWindowID: info.cgWindowID,
+                               isOnScreen: r != Int.max), r)
         }
+        // 不截断：选择面板的视口 + 滚动机制可承载任意行数
+        return ranked.sorted { $0.rank < $1.rank }.map(\.item)
     }
 
-    private struct Entry {
-        let axWindow: AXUIElement
-        let title: String
+    /// 单个 AX 窗口的属性快照：一次批量 IPC 取全，避免逐属性多次往返
+    private struct AXWindowInfo {
+        let window: AXUIElement
+        let subrole: String?
         let isMinimized: Bool
         let cgWindowID: CGWindowID?
-        let bounds: CGRect
+        let position: CGPoint?
+        let size: CGSize?
+        private let rawTitle: String?
+        private let documentPath: String?
+
+        init(_ window: AXUIElement) {
+            self.window = window
+            let values = window.attributeValues([
+                kAXTitleAttribute as String, kAXDocumentAttribute as String,
+                kAXSubroleAttribute as String, kAXMinimizedAttribute as String,
+                kAXPositionAttribute as String, kAXSizeAttribute as String
+            ])
+            let title = values[0] as? String
+            self.rawTitle = (title?.isEmpty == false) ? title : nil
+            self.documentPath = values[1] as? String
+            self.subrole = values[2] as? String
+            self.isMinimized = (values[3] as? NSNumber)?.boolValue ?? false
+            self.position = AXUIElement.cgPoint(from: values[4])
+            self.size = AXUIElement.cgSize(from: values[5])
+            self.cgWindowID = window.cgWindowID
+        }
+
+        /// 标题回退：AX 标题 → 文档名 → 应用名（首个）或「应用名 N」
+        func title(fallback: String, index: Int) -> String {
+            if let rawTitle { return rawTitle }
+            if let documentPath {
+                let name = (documentPath as NSString).lastPathComponent
+                if !name.isEmpty { return name }
+            }
+            return index == 0 ? fallback : "\(fallback) \(index + 1)"
+        }
     }
 
     private static func boundsKey(_ rect: CGRect) -> String {
@@ -196,14 +224,14 @@ enum WindowListService {
     /// - Finder 的桌面（subrole=AXDesktop、没有 CG 窗口，标题回退成「访达 3」）
     /// - iTerm2 的独立 tab bar（CG 侧是 layer 24 / alpha 0 的辅助层窗口，AX 却当普通窗口返回）
     /// - QQ音乐 与真窗口完全重叠的 AXUnknown 覆盖窗口（CG 侧同样 layer 0 / alpha 1，无法靠 CG 区分）
-    private static func isUserWindow(_ ax: AXUIElement, auxiliary: Set<CGWindowID>,
+    private static func isUserWindow(_ info: AXWindowInfo, auxiliary: Set<CGWindowID>,
                                      hasStandardWindow: Bool) -> Bool {
-        if ax.subrole == desktopSubrole { return false }
+        if info.subrole == desktopSubrole { return false }
         // AXUnknown 是应用没有归类的辅助/覆盖窗口；仅当同一应用还存在正常的 AXStandardWindow
         // 时才剔除，避免把「窗口全是 AXUnknown」的应用整个抹掉（宁可多显示也不误删真窗口）
-        if ax.subrole == unknownSubrole && hasStandardWindow { return false }
+        if info.subrole == unknownSubrole && hasStandardWindow { return false }
         // 私有 API 不可用时 cgWindowID 恒为 nil，此时只能相信 AX 报的窗口列表
-        guard let id = ax.cgWindowID else { return true }
+        guard let id = info.cgWindowID else { return true }
         return !auxiliary.contains(id)
     }
 
@@ -228,16 +256,5 @@ enum WindowListService {
         allVisibleWindows()
             .filter { $0.pid == pid }
             .map { ($0.id, $0.bounds) }
-    }
-
-    private static func title(of axWindow: AXUIElement, fallback: String, index: Int) -> String {
-        if let title = axWindow.title { return title }
-
-        if let document = axWindow.documentPath {
-            let name = (document as NSString).lastPathComponent
-            if !name.isEmpty { return name }
-        }
-
-        return index == 0 ? fallback : "\(fallback) \(index + 1)"
     }
 }

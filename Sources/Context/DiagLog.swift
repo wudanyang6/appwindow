@@ -28,10 +28,12 @@ enum DiagLog {
 
     private static var rotated = false
 
-    static func log(_ tag: String, _ message: String) {
+    /// message 用 @autoclosure：日志关闭时（发布默认）不求值实参，
+    /// 省掉如 diagnosticZOrder() 的 CGWindowList 枚举、标题拼接等无谓开销
+    static func log(_ tag: String, _ message: @autoclosure () -> String) {
         guard isEnabled else { return }
         rotateIfNeeded()
-        let line = "\(timeFormatter.string(from: Date())) [\(tag)] \(message)\n"
+        let line = "\(timeFormatter.string(from: Date())) [\(tag)] \(message())\n"
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
             handle.write(line.data(using: .utf8) ?? Data())

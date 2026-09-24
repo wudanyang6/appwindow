@@ -11,19 +11,20 @@ enum Theme {
     /// 液态玻璃的黑色 tint 透明度：轻度压暗，提升面板上文字/图标对比（越大越暗）
     private static let glassTintAlpha: CGFloat = 0.1
 
-    /// 给面板容器装配背景材质：
-    /// - macOS 26+ 且未关闭玻璃：单层 NSGlassEffectView（.regular）+ 轻度黑色 tint 压暗，
-    ///   不叠毛玻璃打底
+    /// 给面板容器装配背景材质，返回所加的材质视图（供复用容器时保留、不重建）：
+    /// - macOS 26+ 且未关闭玻璃：单层 NSGlassEffectView（.regular）+ 轻度黑色 tint 压暗
     /// - 否则（关闭玻璃 / macOS 14/15）：毛玻璃模糊层 + 半透明底色层（更实、更糊）
     /// 容器由本函数设圆角与裁剪，材质层随容器尺寸自适应
-    static func installBackground(on container: NSView, cornerRadius: CGFloat) {
+    @discardableResult
+    static func installBackground(on container: NSView, cornerRadius: CGFloat) -> [NSView] {
         container.wantsLayer = true
         container.layer?.cornerRadius = cornerRadius
         container.layer?.masksToBounds = true
 
         guard #available(macOS 26.0, *), !Settings.glassDisabled else {
             // 毛玻璃模糊层打底
-            container.addSubview(blurView(fitting: container, cornerRadius: cornerRadius, alpha: backgroundAlpha))
+            let blur = blurView(fitting: container, cornerRadius: cornerRadius, alpha: backgroundAlpha)
+            container.addSubview(blur)
             // 半透明底色叠在模糊之上、内容之下：降低透明度（后面窗口透得更少）
             let tint = NSView(frame: container.bounds)
             tint.autoresizingMask = [.width, .height]
@@ -32,7 +33,7 @@ enum Theme {
             tint.layer?.backgroundColor = NSColor.windowBackgroundColor
                 .withAlphaComponent(nonGlassTintAlpha).cgColor
             container.addSubview(tint)
-            return
+            return [blur, tint]
         }
 
         // Liquid Glass 的聚焦/失焦样式由系统按窗口 key 状态渲染，无公开接口可干预；
@@ -43,6 +44,7 @@ enum Theme {
         glass.cornerRadius = cornerRadius
         glass.tintColor = NSColor.black.withAlphaComponent(glassTintAlpha)
         container.addSubview(glass)
+        return [glass]
     }
 
     /// 毛玻璃层：blendingMode 取 behindWindow 才能模糊面板后面的窗口内容。

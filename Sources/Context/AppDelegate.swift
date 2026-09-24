@@ -30,6 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
+        // 关于：系统标准关于面板（名称/版本/图标读自 Info.plist），置顶入口
+        let about = NSMenuItem(title: "关于 AppWindow", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+        menu.addItem(.separator())
+
         // 更新检查：idle 显示检查入口，出结果后显示版本状态
         let updateItem: NSMenuItem
         switch updateChecker?.state {
@@ -125,6 +131,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
 
         return menu
+    }
+
+    /// 系统标准关于面板：名称/版本/图标自动读自 Info.plist，credits 补描述、项目链接与协议。
+    /// accessory 应用无 Dock 图标，先激活自身面板才会前置可见
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: aboutCredits()])
+    }
+
+    /// 关于面板正文：一句话描述 + 可点击的项目主页链接 + 开源协议，居中排版贴近原生
+    private func aboutCredits() -> NSAttributedString {
+        let font = NSFont.systemFont(ofSize: 11)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+
+        let credits = NSMutableAttributedString(
+            string: "液态玻璃风格的 Cmd+Tab / Cmd+` 窗口切换器\n",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
+        credits.append(NSAttributedString(
+            string: "项目主页与源码",
+            attributes: [.font: font,
+                         .link: URL(string: "https://github.com/wudanyang6/appwindow")!]))
+        credits.append(NSAttributedString(
+            string: "\n以 GPL-3.0 协议开源",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        credits.addAttribute(.paragraphStyle, value: paragraph,
+                             range: NSRange(location: 0, length: credits.length))
+        return credits
     }
 
     @objc private func openAccessibilitySettings() {

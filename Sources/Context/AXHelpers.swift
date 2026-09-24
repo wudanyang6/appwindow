@@ -17,6 +17,32 @@ extension AXUIElement {
         AXUIElementPerformAction(self, name as CFString)
     }
 
+    /// 一次 IPC 批量取多个属性，返回与 names 等长的原始值数组（缺失 / 出错项为 nil）。
+    /// 相比逐个 copyAttribute，把每窗口的 N 次跨进程往返压到 1 次
+    func attributeValues(_ names: [String]) -> [AnyObject?] {
+        var raw: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(self, names as CFArray,
+                                                     AXCopyMultipleAttributeOptions(), &raw) == .success,
+              let values = raw as? [AnyObject], values.count == names.count else {
+            return Array(repeating: nil, count: names.count)
+        }
+        // 出错项 API 以 kAXValueAXErrorType 的 AXValue 占位，交由取用处按类型转换归一化为 nil
+        return values.map { $0 is NSNull ? nil : $0 }
+    }
+
+    /// 从批量取值的原始项解出 CGPoint（非 AXValue 或类型不符即 nil）
+    static func cgPoint(from value: AnyObject?) -> CGPoint? {
+        guard let value, CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        return AXValueGetValue(value as! AXValue, .cgPoint, &point) ? point : nil
+    }
+
+    static func cgSize(from value: AnyObject?) -> CGSize? {
+        guard let value, CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
+        var size = CGSize.zero
+        return AXValueGetValue(value as! AXValue, .cgSize, &size) ? size : nil
+    }
+
     var windows: [AXUIElement] {
         copyAttribute(kAXWindowsAttribute) as? [AXUIElement] ?? []
     }

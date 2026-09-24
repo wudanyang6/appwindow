@@ -112,6 +112,7 @@ final class SwitchPanel {
         arrowsPerScreen = []
         items = []
         onPick = nil
+        NonKeyPanel.forceCloseVisible(prefix: "switch-")
     }
 
     private func pickRow(at index: Int) {
@@ -133,6 +134,8 @@ private extension SwitchPanel {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
+        // close() 兜底清扫幽灵面板时，ARC 下必须关闭「关闭即释放」，否则清空引用会二次释放
+        panel.isReleasedWhenClosed = false
     }
 
     /// 构建单个屏幕的完整面板内容；返回滚动用的内容视图与箭头供跨屏同步
@@ -221,6 +224,23 @@ private extension SwitchPanel {
 final class NonKeyPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
+
+    /// 强制关闭 app 内所有 identifier 以 prefix 打头、且仍可见的本类面板。
+    /// 覆盖两类残留：本次会话正在收起、但 orderOut 未即时生效的面板；
+    /// 以及往次会话交接时 orderOut 失效、又被 dismiss 清空引用后无主的「幽灵」。
+    /// dismiss 里同步调用：此刻本会话面板已 orderOut（isVisible=false，不误伤），
+    /// 只有真正滞留在屏的才被 close 摘除，因此不会累积；show 先 dismiss 再建新面板，
+    /// 新面板在本方法返回后才创建，也不会被扫到。
+    static func forceCloseVisible(prefix: String) {
+        let ghosts = NSApp.windows.compactMap { $0 as? NonKeyPanel }
+            .filter { $0.identifier?.rawValue.hasPrefix(prefix) == true && $0.isVisible }
+        guard !ghosts.isEmpty else { return }
+        ghosts.forEach {
+            $0.orderOut(nil)
+            $0.close()
+        }
+        DiagLog.log("dismiss", "forceCloseVisible prefix=\(prefix) swept=\(ghosts.count)")
+    }
 
     // key 状态流转打点：排查玻璃聚焦样式不生效时区分「没成为 key」与「成了 key 但玻璃不认」
     override func becomeKey() {
