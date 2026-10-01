@@ -1,90 +1,90 @@
 # AppWindow
 
-**[→ 在线介绍页](https://wudanyang6.github.io/appwindow/)**
+**[→ Online introduction page](https://wudanyang6.github.io/appwindow/)**
 
-一个只做一件事的 macOS 窗口切换器：用更顺手的方式在**应用**与**窗口**之间切换。灵感来自 [Contexts](https://contexts.co/)，只保留并增强了它最核心的两个快捷键——Cmd+` 与 Cmd+Tab。
+A macOS window switcher focused on a single purpose: switching between apps and windows in a more natural way. Inspired by [Contexts](https://contexts.co/), it keeps the core idea and enhances the parts that matter most.
 
-原生 `Cmd+Tab` 切换应用时看不到窗口、只能逐个循环；原生 Cmd+` 在应用内切窗口同样是一步步试。AppWindow 把这两件事变成**可见、可预览、可鼠标参与**的选择面板。
+When using the native `Cmd+Tab` to switch applications, you cannot see the windows and can only cycle through apps one by one. The native `Cmd+`` within the current app is also a slow trial-and-error process. AppWindow turns both into something visible, previewable, and mouse-friendly.
 
-## 功能
+## Features
 
-### Cmd+Tab —— 应用切换器
+### Cmd+Tab — Application switcher
 
-按住 `Cmd` 再按 `Tab`，屏幕中央出现横向图标面板（尺寸贴近原生）：
+Hold `Cmd` and press `Tab`; a horizontal icon panel appears in the center of the screen with a size close to the native one:
 
-![Cmd+Tab 应用切换器](docs/demo-cmd-tab.jpg)
+![Cmd+Tab application switcher](docs/demo-cmd-tab.jpg)
 
-- `Tab` / `→` 前进，`Shift+Tab` / `←` / `` ` `` 后退
-- `↑` / `↓` 在当前高亮应用的窗口列表中选窗口，松开 `Cmd` 直达该窗口
-- 鼠标：悬停图标或窗口行移动高亮、点击直接切换、滚轮切换应用、在窗口列表上滚动浏览
-- 应用按最近使用排序，窗口超过可视行数时列表连续滚动（带上下箭头指示）
-- **每个屏幕同时显示一份**，状态跨屏同步
+- `Tab` / `→` moves forward, `Shift+Tab` / `←` / `` ` `` moves backward
+- `↑` / `↓` selects a window from the highlighted app's window list; releasing `Cmd` switches directly to that window
+- Mouse: hover over icons or window rows to move the highlight, click to switch immediately, use the scroll wheel to switch apps, and scroll on the window list to browse
+- Applications are ordered by recent use; when the window count exceeds the visible rows, the list scrolls continuously with up/down indicators
+- **One panel is shown per screen**, and state remains synchronized across screens
 
-### Cmd+` —— 当前应用窗口切换器
+### Cmd+` — Current app window switcher
 
-按住 `Cmd` 再按 `` ` ``，屏幕中央弹出当前应用的全部窗口列表（高度约为屏幕的 70%）：
+Hold `Cmd` and press `` ` ``; a popup appears in the center of the screen showing all windows of the current app at about 70% of the screen height:
 
-![Cmd+` 窗口切换器](docs/demo-cmd-grave.jpg)
+![Cmd+` window switcher](docs/demo-cmd-grave.jpg)
 
-- **每按一次 `` ` `` 立即切到下一个窗口**：反复按即依次轮换全部窗口；刚离开的窗口沉到循环队尾，下次轮换最后才回到它，松开再按继续前进（不会来回横跳），与原生 Cmd+` 的循环栈一致。面板高亮随按键依次下移，下次打开面板时列表就是新的循环顺序
-- `↑` / `↓` 上/下移一格并立即切换
-- 鼠标：悬停移动高亮（不切换）、点击直选并收起面板、滚轮滚动列表
-- 单窗口应用同样弹出（快速回到该窗口）
+- **Each press of `` ` `` immediately switches to the next window**: keep pressing to cycle through all windows in order; the window you just left is moved to the end of the cycle and returns only after the rest are visited; release and press again to continue moving forward
+- `↑` / `↓` moves one row and switches immediately
+- Mouse: hover to move the highlight without switching, click to select a window and dismiss the panel, use the scroll wheel to scroll the list
+- Single-window apps still show the popup (to quickly return to that window)
 
-### 其他
+### Other
 
-- `Esc` 或点击面板外任意位置收起面板（Cmd+` 已发生的切换不回退，与原生一致；Cmd+Tab 松开前取消）
-- 面板为非激活窗口，不抢占键盘焦点，全程跟手
-- 需要系统外观深浅模式，背景毛玻璃半透明
-- 菜单栏常驻（无 Dock 图标），可主动触发系统授权弹窗
+- `Esc` or clicking outside the panel dismisses it (`Cmd+`` switch actions are not undone, matching native behavior; `Cmd+Tab` is canceled before release)
+- The panel is a non-active window, so it does not steal keyboard focus and stays aligned with your actions
+- Requires the system appearance in light/dark mode, with a translucent frosted-glass background
+- Menu bar app (no Dock icon), and it can trigger the system authorization dialog when needed
 
-## 安装
+## Installation
 
-### 下载安装
+### Download
 
-从 [Releases](../../releases) 下载最新的 DMG，打开后将 AppWindow 拖入 Applications。
+Download the latest DMG from [Releases](../../releases), open it, and drag AppWindow into Applications.
 
-> 首次运行需要在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 AppWindow（菜单栏图标可直达）。
+> On first launch, enable AppWindow in `System Settings → Privacy & Security → Accessibility` (the menu bar icon can open this directly).
 
-**首次打开提示「无法验证"AppWindow.app"是否包含恶意软件」时**（macOS 15 / 26 上右键「打开」已失效），任选其一放行一次即可，之后正常使用：
+**If the first launch shows: “Cannot verify that AppWindow.app is malicious”** (on macOS 15/26, the right-click “Open” option is no longer available), allow it once using either method below:
 
-1. 图形界面：在提示框点「完成」，再打开 系统设置 → 隐私与安全性，在底部「安全性」区点「仍要打开」
-2. 终端一行：`xattr -dr com.apple.quarantine /Applications/AppWindow.app`
+1. GUI: click “Done” in the prompt, then open System Settings → Privacy & Security and click “Open Anyway” in the “Security” section near the bottom
+2. Terminal: `xattr -dr com.apple.quarantine /Applications/AppWindow.app`
 
-### 源码构建
+### Build from source
 
-要求：macOS 14+、Xcode Command Line Tools。
+Requirements: macOS 14+, Xcode Command Line Tools.
 
 ```bash
-./scripts/build-app.sh      # 编译并组装 AppWindow.app
-./scripts/package-dmg.sh    # （可选）打包 DMG
+./scripts/build-app.sh      # Build and assemble AppWindow.app
+./scripts/package-dmg.sh    # Optional: package a DMG
 ```
 
-## 已知限制
+## Known limitations
 
-- 跨 Space / 全屏应用内的切换依赖系统 activate 行为，个别场景可能不跳转到目标窗口所在 Space
-- 使用私有 API `_AXUIElementGetWindow` 做 CGWindow 与 AXWindow 的匹配（dlsym 动态解析，缺失时自动退化为窗口 bounds 匹配）；因此**不可上架 App Store**
-- 固定监听物理键 keycode 50（ANSI Grave），不跟随系统自定义快捷键
-- 窗口标题取自 Accessibility API，无需屏幕录制权限
+- Switching across Spaces / full-screen apps depends on system `activate` behavior; in some cases it may not jump to the target window's Space
+- Uses the private API `_AXUIElementGetWindow` to match CGWindow and AXWindow objects (resolved dynamically via `dlsym`; if unavailable, it falls back to window bounds matching); therefore **it cannot be submitted to the App Store**
+- Listens for the physical keycode 50 (ANSI Grave) and does not follow custom system shortcuts
+- Window titles come from the Accessibility API and do not require screen recording permission
 
-## 技术实现
+## Technical implementation
 
-Swift + AppKit（SPM 构建），核心组件：
+Swift + AppKit (built with SPM). Core components:
 
 ```
 Sources/Context/
-├── main.swift              # 入口，accessory 应用（无 Dock 图标）
-├── AppDelegate.swift       # 菜单栏、辅助功能权限引导与轮询
-├── EventTapManager.swift   # CGEventTap + 键盘状态机（核心交互逻辑）
-├── AppSwitcherPanel.swift  # Cmd+Tab 图标面板 + 窗口列表（多屏）
-├── SwitchPanel.swift       # Cmd+` 窗口列表面板（多屏）
-├── WindowListService.swift # 窗口枚举：CGWindowList z-order + AX 标题/引用
-├── WindowActivator.swift   # 窗口激活：最小化恢复 → AXRaise → activate
-├── ListScrolling.swift     # 列表连续滚动控制器 + 滚轮响应容器
-├── AXHelpers.swift         # AX API Swift 封装 + 私有符号隔离
-└── Theme.swift             # 全局面板外观设置
+├── main.swift              # Entry point; accessory app (no Dock icon)
+├── AppDelegate.swift       # Menu bar, accessibility permission guidance, and polling
+├── EventTapManager.swift   # CGEventTap + keyboard state machine (core interaction logic)
+├── AppSwitcherPanel.swift  # Cmd+Tab icon panel + window list (multi-screen)
+├── SwitchPanel.swift       # Cmd+` window list panel (multi-screen)
+├── WindowListService.swift # Window enumeration: CGWindowList z-order + AX titles/references
+├── WindowActivator.swift   # Window activation: minimize/restore → AXRaise → activate
+├── ListScrolling.swift     # Continuous list-scrolling controller + wheel response container
+├── AXHelpers.swift         # Swift wrapper around AX APIs + private symbol isolation
+└── Theme.swift             # Global panel appearance settings
 ```
 
 ## License
 
-[GPL-3.0](LICENSE)——使用或修改本软件的项目同样需要以 GPL-3.0 开源。
+[GPL-3.0](LICENSE) — any project that uses or modifies this software must also remain open source under GPL-3.0.
