@@ -35,6 +35,15 @@ jobs:
           ./scripts/package-dmg.sh
 
       # 以下发布步骤只在 tag 构建执行；push main 只跑测试 + 构建 + artifact
+      # tag 带 -beta（如 v0.9.0-beta.1）走 Sparkle beta 通道；写空值占位，后续步骤据此拼 --channel
+      - name: Detect beta channel
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-beta*) echo "CHANNEL=beta" >> "$GITHUB_ENV" ;;
+            *) echo "CHANNEL=" >> "$GITHUB_ENV" ;;
+          esac
+
       - name: Verify tag matches bundle version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -60,7 +69,13 @@ jobs:
           remote_appcast="$RUNNER_TEMP/appcast-remote.xml"
           gh api "repos/wudanyang6/appwindow/contents/appcast.xml?ref=main" \
             -H "Accept: application/vnd.github.raw" > "$remote_appcast"
-          ruby scripts/update-appcast.rb --check --version "$VERSION" --build "$BUILD" --appcast "$remote_appcast"
+          # 只有 beta tag 才追加 --channel；普通发版命令与现状一致
+          channel_args=()
+          if [ -n "$CHANNEL" ]; then
+            channel_args=(--channel "$CHANNEL")
+          fi
+          ruby scripts/update-appcast.rb --check --version "$VERSION" --build "$BUILD" \
+            "${channel_args[@]}" --appcast "$remote_appcast"
 
       - name: Verify signing secret
         if: startsWith(github.ref, 'refs/tags/')
@@ -121,6 +136,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
+          # beta tag 标为预发布：不占 GitHub 的 Latest，也不出现在 release 头条
+          prerelease: ${{ contains(github.ref_name, '-beta') }}
           generate_release_notes: true
           body: |
             ## ⚠️ 首次打开说明（未公证应用）
@@ -148,9 +165,15 @@ jobs:
           remote_appcast="$RUNNER_TEMP/appcast-remote.xml"
           gh api "repos/wudanyang6/appwindow/contents/appcast.xml?ref=main" \
             -H "Accept: application/vnd.github.raw" > "$remote_appcast"
+          # 只有 beta tag 才追加 --channel；普通发版命令与现状一致
+          channel_args=()
+          if [ -n "$CHANNEL" ]; then
+            channel_args=(--channel "$CHANNEL")
+          fi
           ruby scripts/update-appcast.rb \
             --version "$VERSION" \
             --build "$BUILD" \
+            "${channel_args[@]}" \
             --minimum-system-version 14.0 \
             --dmg-url "https://github.com/wudanyang6/appwindow/releases/download/$GITHUB_REF_NAME/AppWindow-$VERSION.dmg" \
             --ed-signature "$ED_SIGNATURE" \
