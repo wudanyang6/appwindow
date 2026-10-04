@@ -51,6 +51,12 @@
 1. 图形界面：在提示框点「完成」，再打开 系统设置 → 隐私与安全性，在底部「安全性」区点「仍要打开」
 2. 终端一行：`xattr -dr com.apple.quarantine /Applications/AppWindow.app`
 
+### 更新
+
+应用内置自动更新（[Sparkle](https://sparkle-project.org)）：菜单栏「检查更新…」可随时手动检查，默认开启的「自动检查更新」会每天后台检查；发现新版本后在应用内完成下载与安装。
+
+> 在自动更新接入之前安装的旧版本，需要手动下载安装一次；之后即可在应用内更新。Gatekeeper 放行提示只影响首次手动安装，应用内更新不会再触发。
+
 ### 源码构建
 
 要求：macOS 14+、Xcode Command Line Tools。
@@ -59,6 +65,8 @@
 ./scripts/build-app.sh      # 编译并组装 AppWindow.app
 ./scripts/package-dmg.sh    # （可选）打包 DMG
 ```
+
+首次构建会通过 SPM 拉取 Sparkle 依赖（需能访问 GitHub）。
 
 ## 已知限制
 
@@ -82,9 +90,10 @@ Sources/Context/
 ├── WindowActivator.swift   # 窗口激活：最小化恢复 → AXRaise → activate
 ├── ListScrolling.swift     # 列表连续滚动控制器 + 滚轮响应容器
 ├── AXHelpers.swift         # AX API Swift 封装 + 私有符号隔离
+├── UpdaterManager.swift    # 自动更新：Sparkle 封装、镜像回退、更新窗口前置
 └── Theme.swift             # 全局面板外观设置
 ```
 
 ## License
 
-[GPL-3.0](LICENSE)——使用或修改本软件的项目同样需要以 GPL-3.0 开源。
+[GPL-3.0](LICENSE)——使用或修改本软件的项目同样需要以 GPL-3.0 开源。第三方组件：Sparkle（MIT，许可证文本见 `ThirdPartyLicenses/Sparkle.txt`，随应用分发）。
