@@ -5,5 +5,17 @@
     <link>https://github.com/wudanyang6/appwindow</link>
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
+    <item>
+      <title>0.8.0（构建 12）</title>
+      <pubDate>Sun, 04 Oct 2026 15:59:14 +0000</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li>docs(readme): 英文 README 补充自动更新说明（旧版本需手动安装一次）</li><li>chore(dry-run): 移除自动更新演练测试 feed</li><li>chore(dry-run): 写入 0.8.1 (13) 测试条目</li><li>chore(dry-run): 添加自动更新演练测试 feed</li><li>docs(readme): 补充应用内自动更新说明</li><li>ci: 发版自动签名 DMG 并更新 appcast</li><li>feat: 应用内自动更新（Sparkle 2，含大陆镜像回退）</li><li>Set the default README to English and add a Chinese version</li><li>Add an English README version for the repository</li><li>ci: Release 正文自动带「本次变更」列表</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.8.0/AppWindow-0.8.0.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="amjGbrXzK8pvsIm8eshpyA6ycopAcLCzy0B8f/xrBzc13eddepzYg1BxyrhIKTWwn0wt7YsPjPm2jGbUkpDwDA=="
+                 length="1952952" />
+    </item>
   </channel>
 </rss>
