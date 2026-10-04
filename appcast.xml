@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>AppWindow</title>
+    <link>https://github.com/wudanyang6/appwindow</link>
+    <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
+    <language>zh-Hans</language>
+  </channel>
+</rss>
