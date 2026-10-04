@@ -51,6 +51,12 @@ Download the latest DMG from [Releases](../../releases), open it, and drag AppWi
 1. GUI: click “Done” in the prompt, then open System Settings → Privacy & Security and click “Open Anyway” in the “Security” section near the bottom
 2. Terminal: `xattr -dr com.apple.quarantine /Applications/AppWindow.app`
 
+### Updates
+
+AppWindow updates itself in place via [Sparkle](https://sparkle-project.org): use **Check for Updates…** in the menu bar, or leave the default **automatic update check** on (once a day). New versions are downloaded, verified and installed inside the app.
+
+> Versions installed before auto-update was introduced need one manual install of the latest DMG; after that, updates happen in-app. The Gatekeeper prompt above only affects that first manual install.
+
 ### Build from source
 
 Requirements: macOS 14+, Xcode Command Line Tools.
@@ -59,6 +65,8 @@ Requirements: macOS 14+, Xcode Command Line Tools.
 ./scripts/build-app.sh      # Build and assemble AppWindow.app
 ./scripts/package-dmg.sh    # Optional: package a DMG
 ```
+
+The first build fetches the Sparkle dependency via SPM (requires access to GitHub).
 
 ## Known limitations
 
@@ -82,10 +90,11 @@ Sources/Context/
 ├── WindowActivator.swift   # Window activation: minimize/restore → AXRaise → activate
 ├── ListScrolling.swift     # Continuous list-scrolling controller + wheel response container
 ├── AXHelpers.swift         # Swift wrapper around AX APIs + private symbol isolation
+├── UpdaterManager.swift    # Auto-update: Sparkle wrapper, mirror fallback, update UI activation
 └── Theme.swift             # Global panel appearance settings
 ```
 
 ## License
 
-[GPL-3.0](LICENSE) — any project that uses or modifies this software must also remain open source under GPL-3.0.
+[GPL-3.0](LICENSE) — any project that uses or modifies this software must also remain open source under GPL-3.0. Third-party: Sparkle (MIT; license text ships in `ThirdPartyLicenses/Sparkle.txt`).
 
