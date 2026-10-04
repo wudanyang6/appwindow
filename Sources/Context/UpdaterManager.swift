@@ -11,6 +11,11 @@ final class UpdaterManager: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverD
     /// 抑制错误后即将换源重试：会话结束回调暂不还原激活策略，避免 Dock 图标闪动
     private var isRetryPending = false
 
+    /// 菜单状态机：驱动「检查更新…」菜单标题；变化时主线程回调
+    private var stateMachine = UpdateStateMachine()
+    var onStateChanged: ((UpdateMenuState) -> Void)?
+    var updateMenuState: UpdateMenuState { stateMachine.state }
+
     private lazy var userDriver: UpdateFallbackUserDriver = {
         let driver = UpdateFallbackUserDriver(hostBundle: .main, delegate: self)
         driver.shouldSuppressUpdaterError = { [weak self] error in
@@ -59,11 +64,31 @@ final class UpdaterManager: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverD
         guard updater.canCheckForUpdates else { return }
 
         beginUpdatePresentation()
+        // 更新已在展示时点击只是把会话带回前台：Sparkle 不会发起新 cycle（也就没有结束回调），
+        // 此时不能进入「正在检查」，否则状态永远停在 checking
+        if !updater.sessionInProgress {
+            transition { $0.cycleStarted() }
+        }
         updater.checkForUpdates()
         #endif
     }
 
     // MARK: - SPUUpdaterDelegate
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        transition { $0.found(version: item.displayVersionString) }
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        // 「已是最新」与「系统不满足」要分开：后者不冒充已是最新
+        let nsError = error as NSError
+        let reason = (nsError.userInfo[SPUNoUpdateFoundReasonKey] as? NSNumber)
+            .flatMap { SPUNoUpdateFoundReason(rawValue: $0.int32Value) }
+        let isOnLatestVersion = reason == .onLatestVersion || reason == .onNewerThanLatestVersion
+        transition {
+            $0.notFound(isOnLatestVersion: isOnLatestVersion, currentVersion: Self.currentShortVersion)
+        }
+    }
 
     func feedURLString(for updater: SPUUpdater) -> String? {
         guard
@@ -93,11 +118,13 @@ final class UpdaterManager: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverD
     ) {
         if updateSourceFallback.advanceAfterError(error) {
             DiagLog.log("update", "换源重试: \(updateSourceFallback.currentSource)")
+            transition { $0.cycleFinished(retrying: true) }
             retry(updateCheck)
             return
         }
 
         isRetryPending = false
+        transition { $0.cycleFinished(retrying: false) }
         endUpdatePresentation()
     }
 
@@ -125,9 +152,46 @@ final class UpdaterManager: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverD
     }
 
     func standardUserDriverWillFinishUpdateSession() {
+        // 换源重试中的「会话结束」只是错误弹窗被抑制，不代表用户看到了结果，不更新菜单状态
+        if !isRetryPending {
+            transition { $0.sessionFinished() }
+        }
         // 抑制错误后紧接着会换源重试：保持 regular，等重试有结果再还原
         guard !isRetryPending else { return }
         endUpdatePresentation()
+    }
+
+    // MARK: - Beta 通道
+
+    /// 参与测试版时允许 beta 通道条目；默认通道始终可见（稳定版更新不受影响），
+    /// 空集 = 只看默认通道
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        Settings.betaChannel ? ["beta"] : []
+    }
+
+    /// 设置窗口切换「参与测试版」后调用：通道集合变化时 Sparkle 会立即补一次后台检查；
+    /// 从未检查过（resetUpdateCycle 无基准可比较）时直接做一次静默探测刷新菜单状态
+    func betaChannelDidChange() {
+        #if !DEBUG
+        if updater.lastUpdateCheckDate == nil {
+            updater.checkForUpdateInformation()
+        } else {
+            updater.resetUpdateCycle()
+        }
+        #endif
+    }
+
+    // MARK: - 菜单状态
+
+    private func transition(_ update: (inout UpdateStateMachine) -> Void) {
+        let previous = stateMachine.state
+        update(&stateMachine)
+        guard stateMachine.state != previous else { return }
+        onStateChanged?(stateMachine.state)
+    }
+
+    private static var currentShortVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     }
 
     // MARK: - accessory ⇄ regular 临时切换

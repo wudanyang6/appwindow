@@ -2,9 +2,10 @@ import AppKit
 import Carbon.HIToolbox
 
 /// 全局键盘状态机，两种互斥的选择模式：
-/// - cmd+`：当前应用的窗口列表（SwitchPanel）。**每按一次立即切换**到下一个窗口，
-///   刚离开的窗口沉到循环队尾（原生 cmd+` 的循环栈），松开 cmd 只收面板
-/// - cmd+tab：应用切换器，高亮应用下方可选窗口（AppSwitcherPanel），松开 cmd 提交
+/// - 窗口切换键（默认 cmd+`）：当前应用的窗口列表（SwitchPanel）。**每按一次立即切换**到下一个窗口，
+///   刚离开的窗口沉到循环队尾（原生 cmd+` 的循环栈），松开修饰键只收面板
+/// - 应用切换键（默认 cmd+tab）：应用切换器，高亮应用下方可选窗口（AppSwitcherPanel），松开修饰键提交
+/// 两个触发键都可在设置里录制更换（ShortcutStore，每事件实时读取，改键即生效）。
 /// 事件 tap 挂在 main runloop 上，回调与状态全部在主线程，无需加锁。
 final class EventTapManager {
 
@@ -19,6 +20,16 @@ final class EventTapManager {
     private var runLoopSource: CFRunLoopSource?
 
     private var mode: Mode?
+    // 本次模式由哪个触发键（基础键，不含反向 Shift）启动：决定「松开修饰键提交」判据、
+    // 模式内重复按键匹配与兜底轮询；每次 begin 时从当前配置快照，会话内不变
+    private var modeTrigger: Shortcut?
+    // 被本应用吞掉 keyDown 的键位：对应 keyUp 到达时精确回收，
+    // 避免放行孤儿 keyUp（旧实现是「Cmd 仍按住就吞」，keyDown 放行时会把无关 keyUp 也吞掉）
+    private var swallowedKeyUps: Set<UInt16> = []
+    // 触发键配置：UserDefaults 有内存缓存，每事件读取的开销可忽略；热生效，无需重建 tap
+    private var shortcuts: ShortcutConfiguration { ShortcutStore.configuration() }
+    // 录制会话（weak：设置窗口销毁即失效）；非 nil 时键盘由会话处理
+    private weak var recordingSession: ShortcutRecorderSession?
 
     // windows 模式状态
     private var items: [WindowItem] = []
@@ -58,7 +69,9 @@ final class EventTapManager {
     // 滚轮切应用的步进阈值，与 ScrollContainerView 一致
     private static let scrollAppStepThreshold: CGFloat = 12
     // keyUp 里判断是否本模式消费的方向 / Esc 键：tap 收全系统按键，用 static 避免每次释放都新建数组
-    private static let modeConsumedKeyUps: Set<Int> = [kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Escape]
+    private static let modeConsumedKeyUps: Set<UInt16> = [
+        UInt16(kVK_UpArrow), UInt16(kVK_DownArrow), UInt16(kVK_LeftArrow), UInt16(kVK_RightArrow), UInt16(kVK_Escape)
+    ]
 
     init(panel: SwitchPanel) {
         self.windowPanel = panel
@@ -109,6 +122,17 @@ final class EventTapManager {
     }
 
     /// 创建全局事件监听；失败通常意味着辅助功能权限未授予。
+    /// 开始录制触发键：先收掉进行中的切换会话，避免面板与录制抢键盘
+    func beginRecording(_ session: ShortcutRecorderSession) {
+        cancelSelection()
+        recordingSession = session
+    }
+
+    /// 结束录制（幂等）：恢复键盘透传
+    func endRecording() {
+        recordingSession = nil
+    }
+
     func start() -> Bool {
         let mask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
@@ -143,6 +167,18 @@ final class EventTapManager {
 private extension EventTapManager {
 
     private func handleEvent(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+        // 录制会话优先：由 tap 吞键并直接回调录制器（录制 Cmd+Tab 时系统切换器不会叠加）；
+        // 会话结束（捕获完成 / Esc / 取消）即恢复透传
+        if let recordingSession {
+            let consumed = recordingSession.handle(type, event)
+            if recordingSession.isFinished {
+                endRecording()
+            }
+            if consumed {
+                return nil
+            }
+        }
+
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             // 回调处理过慢时系统会禁用 tap，立即恢复
@@ -151,9 +187,10 @@ private extension EventTapManager {
 
         case .flagsChanged:
             // flagsChanged 必须透传，否则系统修饰键状态会与物理按键错位
-            if mode != nil && !event.flags.contains(.maskCommand) {
-                // windows 模式（cmd+`）是立即切换：切换已在每次按键时完成，这里只收面板；
-                // apps 模式（cmd+tab）仍是「松开 Cmd 提交」
+            if mode != nil, let trigger = modeTrigger, !trigger.modifiers.isEmpty,
+               !event.flags.intersection(Shortcut.modifierMask).isSuperset(of: trigger.modifiers) {
+                // windows 模式是立即切换：切换已在每次按键时完成，这里只收面板；
+                // apps 模式仍是「松开触发键的修饰键提交」
                 if mode == .windows { endSelection() } else { commitSelection() }
             }
             return Unmanaged.passUnretained(event)
@@ -206,47 +243,73 @@ private extension EventTapManager {
     }
 
     private func handleKeyDown(_ event: CGEvent) -> Unmanaged<CGEvent>? {
-        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
-        let hasCmd = flags.contains(.maskCommand)
 
         if let mode {
             return handleKeyDownInMode(mode, keyCode: keyCode, flags: flags, event: event)
         }
 
-        if keyCode == kVK_ANSI_Grave, hasCmd, !flags.contains(.maskShift) {
-            return beginWindowSelection() ? nil : Unmanaged.passUnretained(event)
+        // 入口精确匹配：命中基础键进正向、命中「基础键 + Shift」进反向；
+        // 进入成功才吞掉 keyDown 并登记 keyUp（进入失败放行，keyUp 也不吞）
+        let shortcuts = self.shortcuts
+        if shortcuts.windowSwitcher.matchesEntry(keyCode: keyCode, flags: flags) {
+            if beginWindowSelection(reverse: false) {
+                swallowedKeyUps.insert(keyCode)
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
         }
-        if keyCode == kVK_Tab, hasCmd {
-            return beginAppSwitching(reverse: flags.contains(.maskShift))
-                ? nil : Unmanaged.passUnretained(event)
+        if shortcuts.windowSwitcher.reversed.matchesEntry(keyCode: keyCode, flags: flags) {
+            if beginWindowSelection(reverse: true) {
+                swallowedKeyUps.insert(keyCode)
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        if shortcuts.appSwitcher.matchesEntry(keyCode: keyCode, flags: flags) {
+            if beginAppSwitching(reverse: false) {
+                swallowedKeyUps.insert(keyCode)
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        if shortcuts.appSwitcher.reversed.matchesEntry(keyCode: keyCode, flags: flags) {
+            if beginAppSwitching(reverse: true) {
+                swallowedKeyUps.insert(keyCode)
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
         }
 
         return Unmanaged.passUnretained(event)
     }
 
-    private func handleKeyDownInMode(_ mode: Mode, keyCode: Int, flags: CGEventFlags, event: CGEvent) -> Unmanaged<CGEvent>? {
-        let hasCmd = flags.contains(.maskCommand)
+    private func handleKeyDownInMode(_ mode: Mode, keyCode: UInt16, flags: CGEventFlags, event: CGEvent) -> Unmanaged<CGEvent>? {
         let hasShift = flags.contains(.maskShift)
 
         switch mode {
         case .windows:
+            // 按住触发键连按：前进 / 后退一个窗口（Shift 反向）
+            if let trigger = modeTrigger, trigger.matchesInMode(keyCode: keyCode, flags: flags) {
+                stepWindow(by: hasShift ? -1 : 1)
+                return nil
+            }
             switch keyCode {
-            case kVK_ANSI_Grave where hasCmd:
+            case UInt16(kVK_DownArrow):
                 stepWindow(by: 1)
                 return nil
-            case kVK_DownArrow:
-                stepWindow(by: 1)
-                return nil
-            case kVK_UpArrow:
+            case UInt16(kVK_UpArrow):
                 stepWindow(by: -1)
                 return nil
-            case kVK_Escape:
+            case UInt16(kVK_Escape):
                 // 立即切换模型下 Esc 只能停止轮换（已发生的切换不回退，与原生 cmd+` 一致）
                 cancelSelection()
                 return nil
-            case kVK_Tab:
-                // 模式互斥：处于窗口模式时吞掉 tab，避免系统应用切换器叠加触发
+            case shortcuts.appSwitcher.keyCode:
+                // 模式互斥：处于窗口模式时吞掉应用切换键，避免系统应用切换器叠加触发；
+                // 登记回收，其 keyUp 同样吞掉（旧实现按「Cmd 按住」无条件吞，这里是精确版）
+                swallowedKeyUps.insert(keyCode)
                 return nil
             default:
                 // 其他按键意味着用户意图已变，收起面板但把事件还给系统
@@ -255,30 +318,30 @@ private extension EventTapManager {
             }
 
         case .apps:
+            // 按住触发键连按：前进 / 后退一个应用（Shift 反向）
+            if let trigger = modeTrigger, trigger.matchesInMode(keyCode: keyCode, flags: flags) {
+                moveApp(by: hasShift ? -1 : 1)
+                return nil
+            }
             switch keyCode {
-            case kVK_Tab where hasCmd && !hasShift:
+            case UInt16(kVK_RightArrow):
                 moveApp(by: 1)
                 return nil
-            case kVK_Tab where hasCmd:
+            case UInt16(kVK_LeftArrow):
                 moveApp(by: -1)
                 return nil
-            case kVK_RightArrow:
-                moveApp(by: 1)
-                return nil
-            case kVK_LeftArrow:
-                moveApp(by: -1)
-                return nil
-            case kVK_UpArrow:
+            case UInt16(kVK_UpArrow):
                 moveWindow(by: -1)
                 return nil
-            case kVK_DownArrow:
+            case UInt16(kVK_DownArrow):
                 moveWindow(by: 1)
                 return nil
-            case kVK_Escape:
+            case UInt16(kVK_Escape):
                 cancelSelection()
                 return nil
-            case kVK_ANSI_Grave:
-                // 等价向左：高亮往回移动一个应用
+            case shortcuts.windowSwitcher.keyCode:
+                // 等价向左：高亮往回移动一个应用；登记回收其 keyUp
+                swallowedKeyUps.insert(keyCode)
                 moveApp(by: -1)
                 return nil
             default:
@@ -289,13 +352,19 @@ private extension EventTapManager {
     }
 
     private func handleKeyUp(_ event: CGEvent) -> Unmanaged<CGEvent>? {
-        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags
+        let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
 
-        if keyCode == kVK_ANSI_Grave && flags.contains(.maskCommand) {
-            return nil
+        // 无修饰的功能键触发没有「松开修饰键」可等：keyUp 到达即提交 / 收面板
+        if let trigger = modeTrigger, trigger.modifiers.isEmpty, trigger.keyCode == keyCode {
+            if mode == .windows {
+                endSelection()
+            } else {
+                commitSelection()
+            }
         }
-        if keyCode == kVK_Tab && flags.contains(.maskCommand) {
+
+        // 只吞本应用吞过 keyDown 的键：放行的 keyDown 不再被误吞 keyUp
+        if swallowedKeyUps.remove(keyCode) != nil {
             return nil
         }
         if mode != nil && Self.modeConsumedKeyUps.contains(keyCode) {
@@ -309,7 +378,7 @@ private extension EventTapManager {
 
 private extension EventTapManager {
 
-    private func beginWindowSelection() -> Bool {
+    private func beginWindowSelection(reverse: Bool) -> Bool {
         guard mode == nil,
               let app = NSWorkspace.shared.frontmostApplication else { return false }
 
@@ -318,9 +387,12 @@ private extension EventTapManager {
 
         mode = .windows
         items = windows
-        // 多窗口时默认高亮下一个窗口（与系统 cmd+` 预期一致），单窗口高亮唯一窗口
-        selection = windows.count >= 2 ? 1 : 0
+        // 正向：多窗口时默认高亮下一个窗口（与系统 cmd+` 预期一致），单窗口高亮唯一窗口；
+        // 反向（触发键 + Shift）：从最后一个窗口开始
+        selection = reverse ? windows.count - 1 : (windows.count >= 2 ? 1 : 0)
         targetApp = app
+        // 会话内统一持基础触发键（不含反向 Shift）：Shift 只决定方向，中途松开 Shift 不结束会话
+        modeTrigger = shortcuts.windowSwitcher
         startTimeout()
 
         // 延迟闭包到点读最新 selection（延迟期间 cmd+` 已经真切换过，光标即当前窗口）
@@ -350,11 +422,12 @@ private extension EventTapManager {
         guard apps.count >= 2 else { return false }
 
         switcherApps = apps
-        // 原生行为：cmd+tab 默认下一个应用，cmd+shift+tab 从最后一个（上一个使用的应用）开始
+        // 原生行为：正向默认下一个应用，反向从最后一个（上一个使用的应用）开始
         appIndex = reverse ? apps.count - 1 : 1
         // 默认高亮窗口列表第一行，松开即窗口级激活该窗口
         windowIndex = 0
         mode = .apps
+        modeTrigger = shortcuts.appSwitcher
         startTimeout()
 
         // 首个应用的窗口也走后台枚举：不在事件 tap 回调里同步做 AX（慢应用可达数百 ms，
@@ -672,6 +745,7 @@ private extension EventTapManager {
 
     private func endSelection() {
         mode = nil
+        modeTrigger = nil
         items = []
         targetApp = nil
         switcherApps = []
@@ -687,16 +761,22 @@ private extension EventTapManager {
         stopOutsideClickMonitor()
         windowPanel.dismiss()
         appPanel.dismiss()
+        // swallowedKeyUps 不在此清空：被吞 keyDown 的物理按键可能仍按着，
+        // 其 keyUp 必须继续吞掉，否则系统会收到孤儿释放事件
     }
 
-    /// modifier 状态兜底：面板的正常关闭由松开 cmd 的 flagsChanged 驱动；
-    /// 该事件丢失（tap 异常）时轮询发现 cmd 已物理松开才收起。
-    /// 用户按住 cmd 长时间浏览不主动取消（旧 30s 硬超时已移除）
+    /// modifier 状态兜底：面板的正常关闭由松开修饰键的 flagsChanged 驱动；
+    /// 该事件丢失（tap 异常）时轮询发现触发键的修饰键已物理松开才收起。
+    /// 用户按住修饰键长时间浏览不主动取消（旧 30s 硬超时已移除）；
+    /// 无修饰的功能键触发没有可松开的修饰键，提交由 keyUp 负责，无需轮询
     private func startTimeout() {
+        guard let trigger = modeTrigger, !trigger.modifiers.isEmpty else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: Self.modifierWatchInterval,
                                          repeats: true) { [weak self] _ in
-            guard let self, self.mode != nil,
-                  !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
+            guard let self, self.mode != nil, let trigger = self.modeTrigger,
+                  !CGEventSource.flagsState(.combinedSessionState)
+                      .intersection(Shortcut.modifierMask)
+                      .isSuperset(of: trigger.modifiers)
             else { return }
             self.cancelSelection()
         }

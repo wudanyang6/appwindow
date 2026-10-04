@@ -9,10 +9,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionTimer: Timer?
     private var isTapRunning = false
     private let updaterManager = UpdaterManager()
+    // 弱引用菜单项：菜单重建时重新绑定（菜单持有 item 的生命周期）
+    private weak var updateMenuItem: NSMenuItem?
+    private lazy var settingsWindowController = SettingsWindowController(
+        updaterManager: updaterManager,
+        eventTapManager: eventTapManager,
+        isAccessibilityGranted: { [weak self] in self?.isTapRunning == true }
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         initializeAccess()
+        // 先接线再启动：启动触发的首轮检查也要能刷新菜单标题
+        updaterManager.onStateChanged = { [weak self] state in
+            guard let self else { return }
+            self.updateMenuItem?.title = self.updateMenuTitle(for: state)
+        }
         updaterManager.start()
     }
 
@@ -36,32 +48,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(about)
         menu.addItem(.separator())
 
-        // 更新：检查入口 + 自动检查开关（偏好由 Sparkle 持久化，菜单只是镜像）
+        // 更新：检查入口，标题由 UpdaterManager 状态机驱动（检查更新… / 正在检查… / 已是最新 / 有新版本）
         let checkUpdate = NSMenuItem(
-            title: "检查更新…",
+            title: updateMenuTitle(for: updaterManager.updateMenuState),
             action: #selector(checkForUpdates),
             keyEquivalent: ""
         )
         checkUpdate.target = self
+        updateMenuItem = checkUpdate
         menu.addItem(checkUpdate)
 
-        let autoUpdate = NSMenuItem(
-            title: "自动检查更新",
-            action: #selector(toggleAutoUpdate(_:)),
-            keyEquivalent: ""
+        // 设置：普通窗口承载全部偏好开关
+        let settingsItem = NSMenuItem(
+            title: "设置…",
+            action: #selector(openSettings),
+            keyEquivalent: ","
         )
-        autoUpdate.target = self
-        autoUpdate.state = updaterManager.automaticallyChecksForUpdates ? .on : .off
-        menu.addItem(autoUpdate)
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
 
+        // 辅助功能权限：状态与引导收进子菜单，主菜单保持精简
+        let accessMenu = NSMenu()
         let status = NSMenuItem(
             title: isTapRunning ? "✓ 辅助功能权限已授权" : "✗ 缺少辅助功能权限",
             action: nil,
             keyEquivalent: ""
         )
         status.isEnabled = false
-        menu.addItem(status)
+        accessMenu.addItem(status)
 
         // 未授权时提供主动触发系统授权弹窗的入口（拒绝后系统弹窗不再自动出现）
         if !isTapRunning {
@@ -71,46 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 keyEquivalent: ""
             )
             request.target = self
-            menu.addItem(request)
+            accessMenu.addItem(request)
         }
 
-        let settings = NSMenuItem(
+        let openSystemSettings = NSMenuItem(
             title: "打开系统设置…",
             action: #selector(openAccessibilitySettings),
             keyEquivalent: ""
         )
-        settings.target = self
-        menu.addItem(settings)
+        openSystemSettings.target = self
+        accessMenu.addItem(openSystemSettings)
 
-        // 对齐系统 cmd+tab 的按住显示行为：快速点按直接切换，不闪面板
-        let delayedPanel = NSMenuItem(
-            title: "延迟显示面板（100ms）",
-            action: #selector(toggleDelayedPanel(_:)),
-            keyEquivalent: ""
-        )
-        delayedPanel.target = self
-        delayedPanel.state = Settings.delayedPanel ? .on : .off
-        menu.addItem(delayedPanel)
-
-        // 液态玻璃的聚焦渲染无法干预，面板观感异常时可以关掉这层只保留毛玻璃
-        let glassDisabled = NSMenuItem(
-            title: "不使用玻璃效果",
-            action: #selector(toggleGlassDisabled(_:)),
-            keyEquivalent: ""
-        )
-        glassDisabled.target = self
-        glassDisabled.state = Settings.glassDisabled ? .on : .off
-        menu.addItem(glassDisabled)
-
-        // 排查工具：默认关闭，开启后写 ~/Library/Logs/AppWindow.log 供问题定位
-        let diagLog = NSMenuItem(
-            title: "诊断日志",
-            action: #selector(toggleDiagLog(_:)),
-            keyEquivalent: ""
-        )
-        diagLog.target = self
-        diagLog.state = DiagLog.isEnabled ? .on : .off
-        menu.addItem(diagLog)
+        let access = NSMenuItem(title: "辅助功能权限", action: nil, keyEquivalent: "")
+        access.submenu = accessMenu
+        menu.addItem(access)
 
         menu.addItem(.separator())
 
@@ -168,23 +157,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 菜单打开状态下切换 state 即实时生效；持久化由 Settings.delayedPanel 的 setter 完成
-    @objc private func toggleDelayedPanel(_ item: NSMenuItem) {
-        Settings.delayedPanel.toggle()
-        item.state = Settings.delayedPanel ? .on : .off
-    }
-
-    /// 菜单打开状态下切换 state 即实时生效；面板每次显示都会重建背景，下次弹出即用新外观。
-    /// 持久化由 Settings.glassDisabled 的 setter 完成
-    @objc private func toggleGlassDisabled(_ item: NSMenuItem) {
-        Settings.glassDisabled.toggle()
-        item.state = Settings.glassDisabled ? .on : .off
-    }
-
-    /// 菜单打开状态下切换 state 即实时生效；持久化由 DiagLog.isEnabled 的 setter 完成
-    @objc private func toggleDiagLog(_ item: NSMenuItem) {
-        DiagLog.isEnabled.toggle()
-        item.state = DiagLog.isEnabled ? .on : .off
+    /// 设置窗口承载全部偏好开关；打开前会同步各控件当前值
+    @objc private func openSettings() {
+        settingsWindowController.show()
     }
 
     /// 主动弹出系统授权请求对话框（用户此前拒绝后，系统不会再自动弹）
@@ -194,14 +169,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 更新
 
-    @objc private func checkForUpdates() {
-        updaterManager.checkForUpdates()
+    /// 菜单标题映射：状态机 → 「检查更新…」动态标题
+    private func updateMenuTitle(for state: UpdateMenuState) -> String {
+        switch state {
+        case .idle:
+            return "检查更新…"
+        case .checking:
+            return "正在检查…"
+        case .upToDate(let version):
+            return "已是最新（\(version)）"
+        case .available(let version):
+            return "有新版本 v\(version) 可用"
+        }
     }
 
-    /// 菜单打开状态下切换 state 即实时生效；持久化由 Sparkle 完成
-    @objc private func toggleAutoUpdate(_ item: NSMenuItem) {
-        updaterManager.automaticallyChecksForUpdates.toggle()
-        item.state = updaterManager.automaticallyChecksForUpdates ? .on : .off
+    @objc private func checkForUpdates() {
+        updaterManager.checkForUpdates()
     }
 
     // MARK: - 权限

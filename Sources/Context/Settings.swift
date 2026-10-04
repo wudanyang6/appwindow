@@ -17,4 +17,11 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: "glassDisabled") }
         set { UserDefaults.standard.set(newValue, forKey: "glassDisabled") }
     }
+
+    /// 参与测试版：接收带 sparkle:channel=beta 的预发布版本（可能不稳定）；
+    /// 关闭时只看默认通道（稳定版），已发布的稳定版更新不受影响
+    static var betaChannel: Bool {
+        get { UserDefaults.standard.bool(forKey: "betaChannelEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "betaChannelEnabled") }
+    }
 }
