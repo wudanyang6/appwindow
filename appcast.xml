@@ -5,5 +5,17 @@
     <link>https://github.com/wudanyang6/appwindow</link>
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
+    <item>
+      <title>0.8.0（构建 12）</title>
+      <pubDate>Sun, 04 Oct 2026 15:59:14 +0000</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li><b>应用内自动更新</b>：菜单栏「检查更新…」，默认每日自动检查；新版本在应用内完成下载、校验与安装（含大陆网络镜像回退）</li><li>发版流程升级：CI 自动签名 DMG 并维护更新源（appcast.xml）</li><li>文档：README 英文版重写，补充自动更新说明</li><li><b>旧版本（0.7.0 及更早）用户需手动安装本版一次</b>；从下一版开始，更新将直接在应用内完成</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.8.0/AppWindow-0.8.0.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="amjGbrXzK8pvsIm8eshpyA6ycopAcLCzy0B8f/xrBzc13eddepzYg1BxyrhIKTWwn0wt7YsPjPm2jGbUkpDwDA=="
+                 length="1952952" />
+    </item>
   </channel>
 </rss>
