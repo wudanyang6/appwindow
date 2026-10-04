@@ -74,7 +74,7 @@ The first build fetches the Sparkle dependency via SPM (requires access to GitHu
 
 - Switching across Spaces / full-screen apps depends on system `activate` behavior; in some cases it may not jump to the target window's Space
 - Uses the private API `_AXUIElementGetWindow` to match CGWindow and AXWindow objects (resolved dynamically via `dlsym`; if unavailable, it falls back to window bounds matching); therefore **it cannot be submitted to the App Store**
-- Listens for the physical keycode 50 (ANSI Grave) and does not follow custom system shortcuts
+- Trigger keys are matched by physical keycode and are configurable in Settings; they do not follow system-level custom shortcut mappings
 - Window titles come from the Accessibility API and do not require screen recording permission
 
 ## Technical implementation
