@@ -36,7 +36,7 @@ Hold `Cmd` and press `` ` ``; a popup appears in the center of the screen showin
 - `Esc` or clicking outside the panel dismisses it (`Cmd+`` switch actions are not undone, matching native behavior; `Cmd+Tab` is canceled before release)
 - The panel is a non-active window, so it does not steal keyboard focus and stays aligned with your actions
 - Requires the system appearance in light/dark mode, with a translucent frosted-glass background
-- Menu bar app (no Dock icon), and it can trigger the system authorization dialog when needed
+- Menu bar app (no Dock icon); the Settings window (`⌘,`) hosts configurable trigger keys, launch at login, the update channel and diagnostics
 
 ## Installation
 
@@ -54,6 +54,8 @@ Download the latest DMG from [Releases](../../releases), open it, and drag AppWi
 ### Updates
 
 AppWindow updates itself in place via [Sparkle](https://sparkle-project.org): use **Check for Updates…** in the menu bar, or leave the default **automatic update check** on (once a day). New versions are downloaded, verified and installed inside the app.
+
+> Pre-release builds go to a **beta channel**; opt in via Settings → 更新 → 参与测试版. Stable releases are always visible regardless of the channel setting.
 
 > Versions installed before auto-update was introduced need one manual install of the latest DMG; after that, updates happen in-app. The Gatekeeper prompt above only affects that first manual install.
 
@@ -91,6 +93,11 @@ Sources/Context/
 ├── ListScrolling.swift     # Continuous list-scrolling controller + wheel response container
 ├── AXHelpers.swift         # Swift wrapper around AX APIs + private symbol isolation
 ├── UpdaterManager.swift    # Auto-update: Sparkle wrapper, mirror fallback, update UI activation
+├── UpdateMenuState.swift   # Update menu state machine (checking / up to date / available)
+├── Shortcut.swift          # Configurable trigger keys: model, matching, validation, storage
+├── ShortcutRecorderView.swift      # Shortcut recording session + recorder control
+├── SettingsWindowController.swift  # Settings window (behavior / updates / general / shortcuts)
+├── LoginItemManager.swift  # Launch at login (SMAppService)
 └── Theme.swift             # Global panel appearance settings
 ```
 
