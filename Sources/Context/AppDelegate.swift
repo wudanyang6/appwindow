@@ -8,12 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var eventTapManager = EventTapManager(panel: panel)
     private var permissionTimer: Timer?
     private var isTapRunning = false
-    private var updateChecker: UpdateChecker?
+    private let updaterManager = UpdaterManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         initializeAccess()
-        setupUpdateChecker()
+        updaterManager.start()
     }
 
     // MARK: - 状态栏
@@ -36,32 +36,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(about)
         menu.addItem(.separator())
 
-        // 更新检查：idle 显示检查入口，出结果后显示版本状态
-        let updateItem: NSMenuItem
-        switch updateChecker?.state {
-        case .available(let latest):
-            updateItem = NSMenuItem(
-                title: "有新版本 \(latest) 可用",
-                action: #selector(openReleasePage),
-                keyEquivalent: ""
-            )
-            updateItem.target = self
-        case .upToDate(let current):
-            updateItem = NSMenuItem(
-                title: "已是最新版本 (\(current))",
-                action: nil,
-                keyEquivalent: ""
-            )
-            updateItem.isEnabled = false
-        default:
-            updateItem = NSMenuItem(
-                title: "检查更新…",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            )
-            updateItem.target = self
-        }
-        menu.addItem(updateItem)
+        // 更新：检查入口 + 自动检查开关（偏好由 Sparkle 持久化，菜单只是镜像）
+        let checkUpdate = NSMenuItem(
+            title: "检查更新…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        checkUpdate.target = self
+        menu.addItem(checkUpdate)
+
+        let autoUpdate = NSMenuItem(
+            title: "自动检查更新",
+            action: #selector(toggleAutoUpdate(_:)),
+            keyEquivalent: ""
+        )
+        autoUpdate.target = self
+        autoUpdate.state = updaterManager.automaticallyChecksForUpdates ? .on : .off
+        menu.addItem(autoUpdate)
         menu.addItem(.separator())
 
         let status = NSMenuItem(
@@ -156,6 +147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         credits.append(NSAttributedString(
             string: "\n以 GPL-3.0 协议开源",
             attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        credits.append(NSAttributedString(
+            string: "\n自动更新由 ",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        credits.append(NSAttributedString(
+            string: "Sparkle",
+            attributes: [.font: font, .link: URL(string: "https://sparkle-project.org")!]))
+        credits.append(NSAttributedString(
+            string: " 提供",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         credits.addAttribute(.paragraphStyle, value: paragraph,
                              range: NSRange(location: 0, length: credits.length))
         return credits
@@ -192,26 +192,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         promptForAccess()
     }
 
-    // MARK: - 更新检测
-
-    private func setupUpdateChecker() {
-        let checker = UpdateChecker()
-        checker.onStateChanged = { [weak self] in
-            self?.statusItem?.menu = self?.buildMenu()
-        }
-        updateChecker = checker
-        // 延迟数秒启动检测，避免挤占应用启动
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak checker] in
-            checker?.start()
-        }
-    }
+    // MARK: - 更新
 
     @objc private func checkForUpdates() {
-        updateChecker?.checkNow()
+        updaterManager.checkForUpdates()
     }
 
-    @objc private func openReleasePage() {
-        updateChecker?.openReleasePage()
+    /// 菜单打开状态下切换 state 即实时生效；持久化由 Sparkle 完成
+    @objc private func toggleAutoUpdate(_ item: NSMenuItem) {
+        updaterManager.automaticallyChecksForUpdates.toggle()
+        item.state = updaterManager.automaticallyChecksForUpdates ? .on : .off
     }
 
     // MARK: - 权限
@@ -251,5 +241,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopPermissionPolling() {
         permissionTimer?.invalidate()
         permissionTimer = nil
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// 检查进行中时置灰「检查更新…」（Sparkle 要求 canCheckForUpdates 为 true 才能调用）
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates) {
+            return updaterManager.canCheckForUpdates
+        }
+        return true
     }
 }
