@@ -6,6 +6,19 @@
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
     <item>
+      <title>0.9.0-beta.2（构建 14）</title>
+      <pubDate>Tue, 06 Oct 2026 17:01:30 +0000</pubDate>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.9.0-beta.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <description><![CDATA[<ul><li>fix(theme): effectIsInteractive 改为运行时探测，兼容 macOS 26 SDK 构建</li><li>feat: 面板几何全可配置、玻璃档位与垫层强度、设置窗口分页与实时预览</li><li>docs(readme): 修正过期限制描述（触发键已可自定义）</li><li>Update appcast for v0.9.0-beta.1 (build 13)</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.9.0-beta.2/AppWindow-0.9.0-beta.2.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="5ZIkX9BMPfvZuGLBYsZDttyFL0wLL8xr3IeCkAHbuq0SB25iLSbzbgPji+/S+KPX1yLchS/W2af88ytrfag8CA=="
+                 length="1954193" />
+    </item>
+    <item>
       <title>0.9.0-beta.1（构建 13）</title>
       <pubDate>Sun, 04 Oct 2026 17:09:17 +0000</pubDate>
       <sparkle:version>13</sparkle:version>
