@@ -6,6 +6,19 @@
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
     <item>
+      <title>0.9.0-beta.1（构建 13）</title>
+      <pubDate>Sun, 04 Oct 2026 17:09:17 +0000</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.9.0-beta.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <description><![CDATA[<ul><li>docs: README 补充设置窗口与 Beta 通道说明</li><li>feat(ci): Beta 通道发版链路（appcast 通道标签 + 预发布）</li><li>feat: 设置窗口与触发键自定义、开机自启动、更新菜单状态</li><li>docs(appcast): 整理 0.8.0 发布说明</li><li>Update appcast for v0.8.0 (build 12)</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.9.0-beta.1/AppWindow-0.9.0-beta.1.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="5K0zFRQeDfRurMCnsdLA7dAZinYtzDHkdeHTiVFC98qtrTQLpnlVDUaXlzNuFLgYGvwx+BymQbdP7+tkJiYYDg=="
+                 length="1886829" />
+    </item>
+    <item>
       <title>0.8.0（构建 12）</title>
       <pubDate>Sun, 04 Oct 2026 15:59:14 +0000</pubDate>
       <sparkle:version>12</sparkle:version>
