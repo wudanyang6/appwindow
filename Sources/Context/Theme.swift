@@ -79,9 +79,11 @@ enum Theme {
         case .off:
             glass.tintColor = nil
         }
-        if #available(macOS 27.0, *) {
-            // 面板/列表是交互容器，开启交互玻璃反馈（悬停/点击时玻璃有响应）
-            glass.effectIsInteractive = true
+        // effectIsInteractive 是 macOS 27 SDK 新增 API：CI 用 macOS 26 SDK 构建，
+        // 直接引用会编译失败。改为运行时按 setter selector 探测、KVC 写入——
+        // 任何 SDK 都能编译，26 运行时探测不到即跳过（交互反馈是 27+ 的增强）
+        if glass.responds(to: Selector(("setEffectIsInteractive:"))) {
+            glass.setValue(true, forKey: "effectIsInteractive")
         }
         // 内容宿主：放进 glass.contentView 才保证被嵌入玻璃内正确合成
         let host = NSView(frame: glass.bounds)
