@@ -1,5 +1,12 @@
 import AppKit
 
+/// 面板背景材质：Regular / Clear 两种液态玻璃，或关闭玻璃退回毛玻璃
+enum GlassMode: String, CaseIterable {
+    case regular
+    case clear
+    case off
+}
+
 /// 用户偏好：菜单栏开关控制，UserDefaults 持久化
 enum Settings {
 
@@ -11,11 +18,35 @@ enum Settings {
         set { UserDefaults.standard.set(newValue, forKey: "delayedPanelEnabled") }
     }
 
-    /// 不使用玻璃效果：面板背景退化为纯毛玻璃，去掉 NSGlassEffectView 那层。
-    /// 液态玻璃的聚焦样式由系统按窗口 key 状态渲染、无法干预，出问题时由此开关整体绕开
-    static var glassDisabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "glassDisabled") }
-        set { UserDefaults.standard.set(newValue, forKey: "glassDisabled") }
+    /// 面板背景材质（原「不使用玻璃效果」开关升级为三选一）。
+    /// Liquid Glass 的聚焦样式由系统按窗口 key 状态渲染、无法干预，观感异常时切 Clear 或关闭
+    static var glassMode: GlassMode {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: "glassMode"),
+               let mode = GlassMode(rawValue: raw) {
+                return mode
+            }
+            // 兼容旧键：glassDisabled = true 视为关闭玻璃
+            return UserDefaults.standard.bool(forKey: "glassDisabled") ? .off : .regular
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "glassMode") }
+    }
+
+    /// 玻璃下毛玻璃垫层的强度（0 = 关闭、不装配垫层；1 = 完全生效，默认）。
+    /// 强度即垫层的不透明度：半透明模糊与清晰底层混合，观感上就是「模糊度」可调。
+    /// 原为布尔开关，升级为连续值：旧键 true → 1、false → 0；两者都未设置过 → 默认 1
+    static var glassUnderBlurStrength: Double {
+        get {
+            if let stored = UserDefaults.standard.object(forKey: "glassUnderBlurStrength") as? NSNumber {
+                return min(max(stored.doubleValue, 0), 1)
+            }
+            // 兼容旧键：glassUnderBlurEnabled = false 视为 0%，其余（含未设置）视为默认 100%
+            if let legacy = UserDefaults.standard.object(forKey: "glassUnderBlurEnabled") as? NSNumber {
+                return legacy.boolValue ? 1 : 0
+            }
+            return 1
+        }
+        set { UserDefaults.standard.set(min(max(newValue, 0), 1), forKey: "glassUnderBlurStrength") }
     }
 
     /// 参与测试版：接收带 sparkle:channel=beta 的预发布版本（可能不稳定）；

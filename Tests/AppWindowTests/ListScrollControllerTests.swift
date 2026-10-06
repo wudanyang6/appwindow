@@ -8,10 +8,8 @@ final class ListScrollControllerTests: XCTestCase {
 
     private func makeController(total: Int, shown: Int,
                                rowHeight: CGFloat = 34) -> ListScrollController {
-        let controller = ListScrollController(rowHeight: rowHeight)
-        controller.attach(contents: [NSView()],
-                          contentHeight: CGFloat(total) * rowHeight,
-                          clipHeight: CGFloat(shown) * rowHeight)
+        let controller = ListScrollController()
+        controller.attach(contents: [NSView()], rowHeight: rowHeight, total: total, shown: shown)
         return controller
     }
 
@@ -78,5 +76,42 @@ final class ListScrollControllerTests: XCTestCase {
 
         controller.ensureVisible(index: 0, total: total)         // 视觉最下
         XCTAssertTrue(rowVisible(0))
+    }
+
+    /// 行高可配置：maxScroll / ensureVisible 的数学与 attach 传入的行高同源
+    func testNonDefaultRowHeight() {
+        let total = 10, shown = 3
+        let rowHeight: CGFloat = 60
+        let controller = makeController(total: total, shown: shown, rowHeight: rowHeight)
+        XCTAssertEqual(controller.rowHeight, rowHeight)
+        XCTAssertEqual(controller.maxScroll, CGFloat(total - shown) * rowHeight)
+
+        let contentHeight = CGFloat(total) * rowHeight
+        let clipHeight = CGFloat(shown) * rowHeight
+        func rowVisible(_ index: Int) -> Bool {
+            let rowY = CGFloat(total - 1 - index) * rowHeight
+            let rowTop = rowY + rowHeight
+            let visibleBottom = contentHeight - clipHeight - controller.offset
+            let visibleTop = contentHeight - controller.offset
+            return rowY >= visibleBottom - 0.01 && rowTop <= visibleTop + 0.01
+        }
+
+        controller.ensureVisible(index: total - 1, total: total)
+        XCTAssertTrue(rowVisible(total - 1))
+        controller.ensureVisible(index: 0, total: total)
+        XCTAssertTrue(rowVisible(0))
+        XCTAssertLessThanOrEqual(controller.offset, controller.maxScroll)
+    }
+
+    /// 重新 attach（每次面板显示都会调用）刷新行高并重置偏移
+    func testReattachRefreshesRowHeightAndResetsOffset() {
+        let controller = makeController(total: 10, shown: 5, rowHeight: 34)
+        controller.scroll(by: -50)
+        XCTAssertEqual(controller.offset, 50)
+
+        controller.attach(contents: [NSView()], rowHeight: 60, total: 10, shown: 5)
+        XCTAssertEqual(controller.rowHeight, 60)
+        XCTAssertEqual(controller.offset, 0)
+        XCTAssertEqual(controller.maxScroll, CGFloat(5) * 60)
     }
 }

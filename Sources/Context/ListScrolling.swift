@@ -8,25 +8,25 @@ final class ListScrollController {
     /// 偏移变化后回调（面板据此更新箭头指示）
     var onOffsetChanged: (() -> Void)?
 
-    let rowHeight: CGFloat
+    /// 行高：由 attach 每次显示时从配置刷新，与行 frame / maxScroll / ensureVisible 同源
+    private(set) var rowHeight: CGFloat = 34
 
     private var contentViews: [NSView] = []
     private var contentHeight: CGFloat = 0
     private var clipHeight: CGFloat = 0
     private(set) var offset: CGFloat = 0
 
-    init(rowHeight: CGFloat) {
-        self.rowHeight = rowHeight
-    }
-
     var maxScroll: CGFloat { max(0, contentHeight - clipHeight) }
     var hasMoreAbove: Bool { offset > 0.5 }
     var hasMoreBelow: Bool { maxScroll - offset > 0.5 }
 
-    func attach(contents: [NSView], contentHeight: CGFloat, clipHeight: CGFloat) {
+    /// 每次 show/render 调用：行高与行数同一来源，内部派生 contentHeight/clipHeight，
+    /// 从 API 上消除「rowHeight 与视口高度不一致」的可能；offset 归零
+    func attach(contents: [NSView], rowHeight: CGFloat, total: Int, shown: Int) {
         self.contentViews = contents
-        self.contentHeight = contentHeight
-        self.clipHeight = clipHeight
+        self.rowHeight = rowHeight
+        self.contentHeight = CGFloat(total) * rowHeight
+        self.clipHeight = CGFloat(shown) * rowHeight
         offset = 0
     }
 
@@ -69,9 +69,9 @@ final class ListScrollController {
 
 extension NSEvent {
 
-    /// 普通鼠标滚轮一格的等效像素位移：取一个窗口列表行高，
+    /// 普通鼠标滚轮一格的等效像素位移：取一个窗口列表行高（跟随配置），
     /// 使滚轮一格正好滚过一行（步进路径则一格切一个应用）
-    private static let wheelLineStep: CGFloat = 34
+    private static var wheelLineStep: CGFloat { Tuning.rowHeight.value }
 
     /// 滚轮增量归一化为像素：触摸板是精确设备、本就给像素；普通鼠标只给「行」增量
     /// （实测一格 scrollingDeltaY = ±1），直接当像素用会几乎不动——必须先乘回行高

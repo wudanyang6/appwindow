@@ -53,18 +53,23 @@ enum WindowListService {
 
     /// 所有可切换应用，按 CGWindowList 全局 z-order 推导的最近使用顺序排列；
     /// 无可见窗口的应用（最小化/隐藏）沉底。
+    /// 附件应用（本应用的设置窗口、菜单栏工具的窗口）有普通可见窗口时同样入列：
+    /// 否则打开设置窗口后无法用 cmd+tab 切回；无窗口时不入列，避免切过去没窗口的幽灵条目
     static func switcherApps() -> [SwitcherApp] {
-        let selfPID = ProcessInfo.processInfo.processIdentifier
+        let visible = allVisibleWindows()
+        let visiblePIDs = Set(visible.map(\.pid))
         // 刚退出的应用在 runningApplications 里会短暂残留（终止是异步的），此刻其 .icon 已为 nil，
         // 不过滤就会以空白图标出现在面板上；isTerminated 已翻真，据此剔除
-        let running = NSWorkspace.shared.runningApplications.filter {
-            $0.activationPolicy == .regular && $0.processIdentifier != selfPID && !$0.isTerminated
+        let running = NSWorkspace.shared.runningApplications.filter { app in
+            shouldList(policy: app.activationPolicy,
+                       isTerminated: app.isTerminated,
+                       hasVisibleWindow: visiblePIDs.contains(app.processIdentifier))
         }
         let byPID = Dictionary(uniqueKeysWithValues: running.map { ($0.processIdentifier, $0) })
 
         var order: [pid_t] = []
         var seen = Set<pid_t>()
-        for window in allVisibleWindows() where byPID[window.pid] != nil && !seen.contains(window.pid) {
+        for window in visible where byPID[window.pid] != nil && !seen.contains(window.pid) {
             seen.insert(window.pid)
             order.append(window.pid)
         }
@@ -72,6 +77,19 @@ enum WindowListService {
         let rest = running.filter { !seen.contains($0.processIdentifier) }
         let ordered = (order + rest.map(\.processIdentifier)).compactMap { byPID[$0] }
         return ordered.map { SwitcherApp(app: $0) }
+    }
+
+    /// 是否列入切换器：常规应用始终列入（无窗口时按 z-order 缺失沉底），
+    /// 附件应用仅当有普通可见窗口时列入；prohibited（系统代理类）不列入
+    static func shouldList(policy: NSApplication.ActivationPolicy,
+                           isTerminated: Bool,
+                           hasVisibleWindow: Bool) -> Bool {
+        guard !isTerminated else { return false }
+        switch policy {
+        case .regular: return true
+        case .accessory: return hasVisibleWindow
+        default: return false
+        }
     }
 
     static func windows(of app: NSRunningApplication) -> [WindowItem] {

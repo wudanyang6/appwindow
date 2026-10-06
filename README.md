@@ -36,7 +36,7 @@ Hold `Cmd` and press `` ` ``; a popup appears in the center of the screen showin
 - `Esc` or clicking outside the panel dismisses it (`Cmd+`` switch actions are not undone, matching native behavior; `Cmd+Tab` is canceled before release)
 - The panel is a non-active window, so it does not steal keyboard focus and stays aligned with your actions
 - Requires the system appearance in light/dark mode, with a translucent frosted-glass background
-- Menu bar app (no Dock icon); the Settings window (`⌘,`) hosts configurable trigger keys, launch at login, the update channel and diagnostics
+- Menu bar app (no Dock icon); the Settings window (`⌘,`) hosts configurable trigger keys, the full panel geometry (icon size, row height, panel width, spacing, corner radii, fonts — with live previews), glass mode & blur strength, launch at login, the update channel and diagnostics. While open, the Settings window itself appears in the `Cmd+Tab` list
 
 ## Installation
 

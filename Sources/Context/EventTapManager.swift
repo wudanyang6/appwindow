@@ -31,6 +31,23 @@ final class EventTapManager {
     // 录制会话（weak：设置窗口销毁即失效）；非 nil 时键盘由会话处理
     private weak var recordingSession: ShortcutRecorderSession?
 
+    // 预览会话（设置窗口「预览面板」用，实时更新）：只展示不切换，
+    // 点击面板/Esc/点击其他应用/停止调整 10 秒后收起
+    private var previewActive = false
+    private var previewMode: PreviewMode?
+    private var previewWindowItems: [WindowItem] = []
+    private var previewWindowIcon: NSImage?
+    private var previewDismissWork: DispatchWorkItem?
+    private var previewRefreshWork: DispatchWorkItem?
+    private var lastPreviewRefresh: TimeInterval = 0
+    private var previewEscMonitor: Any?
+    private static let previewDuration: TimeInterval = 10
+    // 预览重渲染节流间隔：拖杆时的高频回调合并到约 8Hz
+    private static let previewRefreshInterval: TimeInterval = 0.12
+
+    /// 应用切换会话或预览进行中：窗口加载/悬停/预取共用同一套 UI 路径
+    private var isAppSwitcherUIActive: Bool { mode == .apps || previewActive }
+
     // windows 模式状态
     private var items: [WindowItem] = []
     // 光标 = 当前所在窗口在列表中的下标；hover 只移动它不切换，按键 / 点击同时切换
@@ -122,8 +139,9 @@ final class EventTapManager {
     }
 
     /// 创建全局事件监听；失败通常意味着辅助功能权限未授予。
-    /// 开始录制触发键：先收掉进行中的切换会话，避免面板与录制抢键盘
+    /// 开始录制触发键：先收掉预览与进行中的切换会话，避免面板与录制抢键盘
     func beginRecording(_ session: ShortcutRecorderSession) {
+        endPreview()
         cancelSelection()
         recordingSession = session
     }
@@ -131,6 +149,185 @@ final class EventTapManager {
     /// 结束录制（幂等）：恢复键盘透传
     func endRecording() {
         recordingSession = nil
+    }
+
+    // MARK: - 面板预览（设置窗口用，实时）
+
+    enum PreviewMode {
+        case appSwitcher
+        case windowSwitcher
+    }
+
+    /// 开始/切换实时预览：面板展示后随几何参数调整实时重渲染（~8Hz 节流），
+    /// 直到 Esc / 点击面板 / 点击其他应用 / 设置窗口关闭。
+    /// 预览不抢 key（makeKey: false）——设置窗口保持 key，拖参数不被打断；
+    /// 任何选择只收起面板，不激活窗口
+    func startLivePreview(_ mode: PreviewMode) {
+        guard self.mode == nil else { return }
+        if previewActive, previewMode == mode { return }
+        endPreview()
+
+        previewMode = mode
+        beginPreview()
+
+        switch mode {
+        case .appSwitcher:
+            let apps = mruOrdered(WindowListService.switcherApps())
+            guard !apps.isEmpty else {
+                endPreview()
+                return
+            }
+            switcherApps = apps
+            appIndex = 0
+            windowIndex = 0
+            // 与真实流程一致：首屏窗口后台枚举（悬停/预取路径已放宽为预览可用）
+            loadWindowsInBackground(at: 0)
+            renderAppPreview()
+            refreshDockBadges()
+        case .windowSwitcher:
+            previewWindowItems = []
+            previewWindowIcon = nil
+            renderWindowPreview()
+            // 先占位行即时展示（零成本），后台枚举真实窗口后回填。
+            // AX 枚举绝不在主线程同步做（与 focusApp 的既有原则一致）；
+            // 数据源取最近使用且有窗口的应用（预览时前台是设置窗口，不能用 frontmost）
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                var items: [WindowItem] = []
+                var iconApp: NSRunningApplication?
+                for candidate in WindowListService.switcherApps().prefix(4) {
+                    let windows = WindowListService.windows(of: candidate.app)
+                    if !windows.isEmpty {
+                        items = windows
+                        iconApp = candidate.app
+                        break
+                    }
+                }
+                DispatchQueue.main.async {
+                    guard let self, self.previewActive, self.previewMode == .windowSwitcher else { return }
+                    self.previewWindowItems = items
+                    // 图标缓存只允许主线程访问，回主线程再取
+                    self.previewWindowIcon = iconApp.flatMap { AppIconCache.icon(for: $0) }
+                    self.renderWindowPreview()
+                }
+            }
+        }
+    }
+
+    /// 几何参数变化后重渲染预览。节流（前沿 + 末次补偿）：拖杆的高频回调合并到 ~8Hz，
+    /// 且保证最后一次调整一定生效
+    func refreshLivePreview() {
+        guard previewActive else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - lastPreviewRefresh
+        if elapsed >= Self.previewRefreshInterval {
+            performPreviewRefresh()
+        } else {
+            previewRefreshWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.performPreviewRefresh() }
+            previewRefreshWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (Self.previewRefreshInterval - elapsed), execute: work
+            )
+        }
+    }
+
+    private func performPreviewRefresh() {
+        guard previewActive else { return }
+        lastPreviewRefresh = ProcessInfo.processInfo.systemUptime
+        switch previewMode {
+        case .appSwitcher:
+            renderAppPreview()
+        case .windowSwitcher:
+            renderWindowPreview()
+        case nil:
+            return
+        }
+        armPreviewDismiss()
+    }
+
+    private func renderAppPreview() {
+        appPanel.show(
+            apps: switcherApps,
+            appIndex: appIndex,
+            windows: switcherApps.indices.contains(appIndex) ? switcherApps[appIndex].windows : [],
+            windowIndex: windowIndex,
+            badges: switcherApps.map { dockBadges[$0.name] },
+            onPickApp: { [weak self] _ in self?.endPreview() },
+            onHoverApp: { [weak self] in self?.hoverApp(at: $0) },
+            onPickWindow: { [weak self] _ in self?.endPreview() },
+            onHoverWindow: { [weak self] in self?.hoverWindow(at: $0) },
+            onScrollApp: { [weak self] in self?.moveApp(by: $0) },
+            onCancel: { [weak self] in self?.endPreview() },
+            makeKey: false
+        )
+    }
+
+    private func renderWindowPreview() {
+        let items = previewWindowItems.isEmpty ? Self.previewPlaceholderItems() : previewWindowItems
+        windowPanel.show(
+            items: items,
+            appIcon: previewWindowIcon,
+            selected: 0,
+            onPick: { [weak self] _ in self?.endPreview() },
+            onHover: { [weak self] in self?.windowPanel.select(index: $0) },
+            makeKey: false
+        )
+    }
+
+    /// 结束预览（幂等）；真实切换会话不受影响
+    func endPreview() {
+        guard previewActive else { return }
+        previewActive = false
+        previewMode = nil
+        previewDismissWork?.cancel()
+        previewDismissWork = nil
+        previewRefreshWork?.cancel()
+        previewRefreshWork = nil
+        if let previewEscMonitor {
+            NSEvent.removeMonitor(previewEscMonitor)
+            self.previewEscMonitor = nil
+        }
+        // 真实会话进行中时只清理预览状态（预览与真实会话互斥，这里是防御）
+        guard mode == nil else { return }
+        stopOutsideClickMonitor()
+        windowPanel.dismiss()
+        appPanel.dismiss()
+    }
+
+    private func beginPreview() {
+        previewActive = true
+        lastPreviewRefresh = ProcessInfo.processInfo.systemUptime
+        startOutsideClickMonitor()
+        // Esc 收起：本地监听即可（预览不占 mode，tap 不会拦 Esc）
+        previewEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == UInt16(kVK_Escape) else { return event }
+            self?.endPreview()
+            return nil
+        }
+        armPreviewDismiss()
+    }
+
+    /// 预览自动收起：每次重渲染都重新计时（停止调整 10 秒后收起）
+    private func armPreviewDismiss() {
+        previewDismissWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.endPreview() }
+        previewDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewDuration, execute: work)
+    }
+
+    /// 预览占位行：预览不激活任何窗口，占位元素不会被使用
+    private static func previewPlaceholderItems() -> [WindowItem] {
+        let pid = NSRunningApplication.current.processIdentifier
+        return (1...5).map { index in
+            WindowItem(
+                axWindow: AXUIElementCreateApplication(pid),
+                title: "示例窗口 \(index)",
+                isMinimized: false,
+                cgWindowID: nil,
+                isOnScreen: true
+            )
+        }
     }
 
     func start() -> Bool {
@@ -379,6 +576,7 @@ private extension EventTapManager {
 private extension EventTapManager {
 
     private func beginWindowSelection(reverse: Bool) -> Bool {
+        endPreview()
         guard mode == nil,
               let app = NSWorkspace.shared.frontmostApplication else { return false }
 
@@ -413,6 +611,7 @@ private extension EventTapManager {
     }
 
     private func beginAppSwitching(reverse: Bool) -> Bool {
+        endPreview()
         guard mode == nil else { return true }
 
         var apps = mruOrdered(WindowListService.switcherApps())
@@ -482,7 +681,7 @@ private extension EventTapManager {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let badges = DockBadgeService.badgeByTitle()
             DispatchQueue.main.async {
-                guard let self, self.mode == .apps else { return }
+                guard let self, self.isAppSwitcherUIActive else { return }
                 self.dockBadges = badges
                 self.appPanel.updateBadges(self.switcherApps.map { badges[$0.name] })
             }
@@ -578,7 +777,7 @@ private extension EventTapManager {
     /// 后台枚举结果写回主线程状态与面板：仍在 apps 模式、目标仍在且未加载才生效。
     /// MRU 快照/排序只在主线程（其状态只在主线程改）
     private func applyLoadedWindows(_ raw: [WindowItem], pid: pid_t, app: NSRunningApplication) {
-        guard mode == .apps,
+        guard isAppSwitcherUIActive,
               let i = switcherApps.firstIndex(where: { $0.app.processIdentifier == pid }),
               !switcherApps[i].windowsLoaded else { return }
         // 前台 app 的 z 序快照对齐（读 CGWindowList，快）
@@ -601,7 +800,7 @@ private extension EventTapManager {
     }
 
     private func prewarmNext(_ queue: [Int]) {
-        guard mode == .apps, let index = queue.first else { return }
+        guard isAppSwitcherUIActive, let index = queue.first else { return }
         let rest = Array(queue.dropFirst())
         guard switcherApps.indices.contains(index), !switcherApps[index].windowsLoaded else {
             prewarmNext(rest)
@@ -649,7 +848,7 @@ private extension EventTapManager {
 
     /// 鼠标悬停图标：只移动高亮，不提交（与方向键共用非阻塞加载路径，首次悬停不再卡）
     private func hoverApp(at index: Int) {
-        guard mode == .apps, switcherApps.indices.contains(index), index != appIndex else { return }
+        guard isAppSwitcherUIActive, switcherApps.indices.contains(index), index != appIndex else { return }
         focusApp(at: index)
     }
 
@@ -661,7 +860,7 @@ private extension EventTapManager {
     }
 
     private func hoverWindow(at index: Int) {
-        guard mode == .apps else { return }
+        guard isAppSwitcherUIActive else { return }
         windowIndex = index
         // 同步面板高亮，否则悬停无视觉反馈
         appPanel.selectWindow(index: index)
@@ -792,7 +991,12 @@ private extension EventTapManager {
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            self?.cancelSelection()
+            guard let self else { return }
+            if self.mode != nil {
+                self.cancelSelection()
+            } else if self.previewActive {
+                self.endPreview()
+            }
         }
     }
 

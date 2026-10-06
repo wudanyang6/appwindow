@@ -1,15 +1,17 @@
 import AppKit
 
-// 文件级布局常量
-private enum PanelMetrics {
-    static let width: CGFloat = 520
-    static let rowHeight: CGFloat = 34
-    static let edgeInset: CGFloat = 8
-    // 托盘圆角与行高亮圆角同心：高亮半径 8 + 高亮距托盘边 edgeInset 8 = 16，
-    // 使托盘圆角与高亮圆角平行等距，视觉一致
-    static let cornerRadius: CGFloat = 16
-    // 面板高度目标：屏幕可视高度的 70%
-    static let heightRatio: CGFloat = 0.70
+// 文件级布局常量：全部来自 Tuning（设置窗口可调），每次 show 读取 → 改配置下次显示生效
+enum PanelMetrics {
+    static var width: CGFloat { Tuning.panelWidth.value }
+    static var rowHeight: CGFloat { Tuning.rowHeight.value }
+    static var edgeInset: CGFloat { Tuning.edgeInset.value }
+    static var cornerRadius: CGFloat { Tuning.listCornerRadius.value }
+    // 默认值下托盘圆角与行高亮圆角同心（高亮半径 8 + 距托盘边 edgeInset 8 = 16）；
+    // 两者现已可独立配置，该关系仅在默认值下成立
+    // 面板高度目标：屏幕可视高度的一定比例
+    static var heightRatio: CGFloat { Tuning.heightRatio.value }
+    // 行标题字体：与 AppSwitcherPanel 共用同一配置来源
+    static var listFont: NSFont { .systemFont(ofSize: Tuning.listFontSize.value) }
 
     /// 按屏幕高度推导可视行数（多屏时取最小屏，保证各屏显示一致），超出部分滚动显示
     static func maxListRows() -> Int {
@@ -31,7 +33,7 @@ final class SwitchPanel {
     private var selectedIndex = 0
     private var onPick: ((Int) -> Void)?
 
-    private let listScroller = ListScrollController(rowHeight: PanelMetrics.rowHeight)
+    private let listScroller = ListScrollController()
     private var arrowsPerScreen: [(up: NSImageView, down: NSImageView)] = []
 
     /// 显示面板并高亮 initialSelected 对应的行。
@@ -39,7 +41,8 @@ final class SwitchPanel {
     func show(items: [WindowItem], appIcon: NSImage?,
               selected initialSelected: Int,
               onPick: @escaping (Int) -> Void,
-              onHover: @escaping (Int) -> Void) {
+              onHover: @escaping (Int) -> Void,
+              makeKey: Bool = true) {
         dismiss()
 
         self.items = items
@@ -78,15 +81,18 @@ final class SwitchPanel {
         rowViewsPerScreen = allRows
         arrowsPerScreen = allArrows
         listScroller.onOffsetChanged = { [weak self] in self?.updateScrollArrows() }
-        listScroller.attach(contents: scrollContents,
-                            contentHeight: contentHeight, clipHeight: clipHeight)
+        listScroller.attach(contents: scrollContents, rowHeight: PanelMetrics.rowHeight,
+                            total: items.count, shown: shownCount)
         updateScrollArrows()
 
         panels.forEach { $0.orderFrontRegardless() }
-        // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型，同 AppSwitcherPanel）
-        if let first = panels.first {
-            first.makeKeyAndOrderFront(nil)
-            DiagLog.log("panel", "switch makeKey: isKeyWindow=\(first.isKeyWindow) appActive=\(NSApp.isActive)")
+        // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型，同 AppSwitcherPanel）；
+        // 实时预览传 false：设置窗口保持 key，拖参数不被抢焦点
+        if makeKey {
+            if let first = panels.first {
+                first.makeKeyAndOrderFront(nil)
+                DiagLog.log("panel", "switch makeKey: isKeyWindow=\(first.isKeyWindow) appActive=\(NSApp.isActive)")
+            }
         }
     }
 
@@ -152,8 +158,8 @@ private extension SwitchPanel {
 
         let background = ScrollContainerView(frame: NSRect(x: 0, y: 0,
                                                            width: PanelMetrics.width, height: height))
-        // 材质与 cmd+tab 图标行同款，装配逻辑统一在 Theme
-        Theme.installBackground(on: background, cornerRadius: PanelMetrics.cornerRadius)
+        // 材质与 cmd+tab 图标行同款，装配逻辑统一在 Theme；内容装入玻璃的 contentView
+        let themeBackground = Theme.installBackground(on: background, cornerRadius: PanelMetrics.cornerRadius)
         background.onScrollRaw = { [weak self] in self?.listScroller.scroll(by: $0) }
 
         // 裁剪视口 + 承载全部行的内容视图：滚动只平移内容视图，不重建任何行。
@@ -162,7 +168,7 @@ private extension SwitchPanel {
                                         width: PanelMetrics.width, height: clipHeight))
         clip.wantsLayer = true
         clip.layer?.masksToBounds = true
-        background.addSubview(clip)
+        themeBackground.contentHost.addSubview(clip)
 
         let content = NSView(frame: NSRect(x: 0, y: clipHeight - contentHeight,
                                            width: PanelMetrics.width, height: contentHeight))
@@ -171,6 +177,8 @@ private extension SwitchPanel {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
                                     width: PanelMetrics.width,
                                     contentInset: PanelMetrics.edgeInset,
+                                    font: PanelMetrics.listFont,
+                                    rowHeight: PanelMetrics.rowHeight,
                                     hoverGate: hoverGate,
                                     onHover: { [weak self] index in
                                         self?.select(index: index)
@@ -190,8 +198,8 @@ private extension SwitchPanel {
         let arrowX = PanelMetrics.width / 2 - 6
         let up = NSImageView.scrollIndicator(symbol: "chevron.up", x: arrowX, y: height - 13)
         let down = NSImageView.scrollIndicator(symbol: "chevron.down", x: arrowX, y: 1)
-        background.addSubview(up)
-        background.addSubview(down)
+        themeBackground.contentHost.addSubview(up)
+        themeBackground.contentHost.addSubview(down)
 
         // setContentView 会把视图 resize 到窗口当前内容尺寸（初始为 zero），
         // 先保存目标尺寸，替换后再由 setContentSize 恢复
@@ -289,20 +297,23 @@ final class WindowRowView: NSView {
 
     private let index: Int
     private let titleLabel = NSTextField(labelWithString: "")
+    private let iconView = NSImageView()
     // 高亮块独立子层：行本体占满面板宽（两侧边距同样可点击，原生菜单行为），
     // 视觉宽度由高亮块内缩 contentInset 保持
     private let highlightLayer = CALayer()
     private let contentInset: CGFloat
+    private let font: NSFont
     private let hoverGate: MouseHoverGate
     private let onHover: (Int) -> Void
     private let onClick: (Int) -> Void
 
     init(index: Int, icon: NSImage?, title: String, width: CGFloat,
-         contentInset: CGFloat,
+         contentInset: CGFloat, font: NSFont, rowHeight: CGFloat,
          hoverGate: MouseHoverGate,
          onHover: @escaping (Int) -> Void, onClick: @escaping (Int) -> Void) {
         self.index = index
         self.contentInset = contentInset
+        self.font = font
         self.hoverGate = hoverGate
         self.onHover = onHover
         self.onClick = onClick
@@ -312,25 +323,45 @@ final class WindowRowView: NSView {
         highlightLayer.cornerRadius = 8
         layer?.addSublayer(highlightLayer)
 
-        let iconView = NSImageView(frame: NSRect(x: contentInset + 8, y: 8, width: 18, height: 18))
         iconView.image = icon
         iconView.imageScaling = .scaleProportionallyDown
         addSubview(iconView)
 
         titleLabel.stringValue = title
-        titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.font = font
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingMiddle
         titleLabel.cell?.wraps = false
         titleLabel.cell?.truncatesLastVisibleLine = true
-        // 手动 frame 布局不保证触发 layout()，初始宽度必须在此设置
-        titleLabel.frame = NSRect(x: contentInset + 34, y: 9,
-                                  width: width - contentInset * 2 - 42, height: 18)
         addSubview(titleLabel)
+
+        // 手动 frame 布局不保证触发 layout()，初始 frame 必须在此按预期行高设置
+        applyLayout(width: width, height: rowHeight)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// 行内布局：图标与标题垂直居中，随行高自适应。
+    /// 默认 34pt 行高下与改造前逐像素一致（图标 (inset+8, 8, 18, 18)、标题 (inset+34, 9, w, 18)）
+    private func applyLayout(width: CGFloat, height: CGFloat) {
+        let iconSide = min(18, max(12, height - 16))
+        let iconX = contentInset + 8
+        iconView.frame = NSRect(x: iconX, y: (height - iconSide) / 2, width: iconSide, height: iconSide)
+
+        // 文本在 cell 内相对 frame 顶边锚定：用至少 18 高的行盒 + 1pt 光学偏移复刻旧布局；
+        // 行盒被行高与文字高度共同夹住，极端组合（大字号 + 矮行）也不越出行边界
+        let titleHeight = ceil(font.ascender - font.descender + font.leading)
+        let boxHeight = min(max(titleHeight, 18), height)
+        let titleX = iconX + iconSide + 8
+        let titleY = min((height - boxHeight) / 2 + 1, height - boxHeight)
+        titleLabel.frame = NSRect(x: titleX,
+                                  y: titleY,
+                                  width: max(0, width - titleX - contentInset - 8),
+                                  height: boxHeight)
+        highlightLayer.frame = NSRect(x: contentInset, y: 0,
+                                      width: max(0, width - contentInset * 2), height: height)
     }
 
     func setHighlighted(_ highlighted: Bool) {
@@ -343,9 +374,7 @@ final class WindowRowView: NSView {
 
     override func layout() {
         super.layout()
-        titleLabel.frame = NSRect(x: contentInset + 34, y: 9,
-                                  width: bounds.width - contentInset * 2 - 42, height: 18)
-        highlightLayer.frame = bounds.insetBy(dx: contentInset, dy: 0)
+        applyLayout(width: bounds.width, height: bounds.height)
     }
 
     override func mouseDown(with event: NSEvent) {

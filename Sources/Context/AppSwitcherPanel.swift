@@ -1,32 +1,50 @@
 import AppKit
 
-// 文件级布局常量
-private enum SwitcherMetrics {
-    static let iconSizeMax: CGFloat = 154
+// 文件级布局常量：全部来自 Tuning（设置窗口可调），每次 render 读取 → 改配置下次显示生效
+enum SwitcherMetrics {
+    static var iconSizeMax: CGFloat { Tuning.iconSizeMax.value }
+    /// 图标下限；跨项约束在读取处化解（不允许超过上限），存储层不做联动
+    static var iconSizeMin: CGFloat { min(Tuning.iconSizeMin.value, iconSizeMax) }
     // 图标槽位之间的间距
-    static let iconGap: CGFloat = 12
-    static let listWidthMin: CGFloat = 180
-    static let listWidthMax: CGFloat = 360
-    static let maxListRows = 8
+    static var iconGap: CGFloat { Tuning.iconGap.value }
+    static var listWidthMin: CGFloat { min(Tuning.listWidthMin.value, listWidthMax) }
+    static var listWidthMax: CGFloat { Tuning.listWidthMax.value }
+    static var maxListRows: Int { Tuning.maxListRows.intValue }
     // 下拉窗口列表的内边距：收窄使托盘更紧凑（与 cmd+` 面板一致）
-    static let edgeInset: CGFloat = 8
+    static var edgeInset: CGFloat { Tuning.edgeInset.value }
     // 图标行托盘的内边距（独立于列表，四周留白更大）
-    static let iconInset: CGFloat = 24
+    static var iconInset: CGFloat { Tuning.iconInset.value }
     // 图标面板与屏幕两侧的留白，避免面板顶满屏幕
-    static let panelSideMargin: CGFloat = 48
-    static let panelGap: CGFloat = 6
+    static var panelSideMargin: CGFloat { Tuning.panelSideMargin.value }
+    static var panelGap: CGFloat { Tuning.panelGap.value }
     // 图标行托盘圆角
-    static let cornerRadius: CGFloat = 26
+    static var cornerRadius: CGFloat { Tuning.cornerRadius.value }
     // 下拉窗口列表托盘圆角：与行高亮圆角同心（高亮 8 + 距托盘边 edgeInset 8 = 16），视觉一致
-    static let listCornerRadius: CGFloat = 16
-    static let rowHeight: CGFloat = 34
-    static let titleFont = NSFont.systemFont(ofSize: 13)
+    static var listCornerRadius: CGFloat { Tuning.listCornerRadius.value }
+    static var rowHeight: CGFloat { Tuning.rowHeight.value }
+    // 列表行标题字体：两个面板共用，宽度测量与渲染必须同一来源
+    static var listFont: NSFont { .systemFont(ofSize: Tuning.listFontSize.value) }
     // 选中应用名称：托盘内图标下方的文字（字号 + 图标与文字之间的间距）。
     // nameGap 调小 = 文字上移、更贴近图标；托盘高度随之收缩（上下留白居中对称，底部留白不变）
-    static let nameFont = NSFont.systemFont(ofSize: 12, weight: .medium)
-    static let nameGap: CGFloat = 1
+    static var nameFont: NSFont { .systemFont(ofSize: Tuning.nameFontSize.value, weight: .medium) }
+    static var nameGap: CGFloat { Tuning.nameGap.value }
     // 名称距托盘底边的留白：同时也是图标上方留白（居中对称），调大即整体托盘变高
-    static let nameBottomInset: CGFloat = 5
+    static var nameBottomInset: CGFloat { Tuning.nameBottomInset.value }
+    // 列表宽度按最长标题自适应时的补偿余量
+    static var listWidthPadding: CGFloat { Tuning.listWidthPadding.value }
+
+    /// 图标槽边长：按可用宽度均分，夹在 [iconSizeMin, iconSizeMax]（纯函数，便于单测）。
+    /// iconSizeMin 为正值且应用很多时面板可能超出屏幕——高级项，由用户自行权衡
+    static func iconSlotSize(count: Int, availableWidth: CGFloat) -> CGFloat {
+        let n = max(CGFloat(count), 1)
+        let scaled = (availableWidth - iconGap * (n - 1)) / n
+        return min(iconSizeMax, max(iconSizeMin, scaled))
+    }
+
+    /// 角标胶囊高度：按图标尺寸等比（基准 = 图标最大尺寸 → 48pt），夹 24–48 保可读
+    static func badgeHeight(forIconSize iconSize: CGFloat) -> CGFloat {
+        min(max(iconSize * 48 / max(iconSizeMax, 1), 24), 48)
+    }
 }
 
 /// cmd+tab 切换面板，**每个屏幕各显示一份**（状态跨屏同步）：
@@ -61,13 +79,15 @@ final class AppSwitcherPanel {
     // 每屏图标行容器（含液态玻璃）跨渲染复用：切换应用只更新高亮/名称/角标，不重建玻璃材质层
     // （NSGlassEffectView 实例化要分配 GPU 后备 surface，是连续切换掉帧的主要来源）
     private var iconContainersPerScreen: [ScrollContainerView] = []
+    // 每屏图标行/列表的 Theme.Background（内容宿主 + 材质视图）跨渲染复用
+    private var iconBackgroundsPerScreen: [Theme.Background?] = []
     // 每屏当前的应用名 label：复用容器时先移除旧的再放新的，避免叠加
     private var nameLabelsPerScreen: [NSTextField?] = []
-    // 每屏窗口列表容器 + 其材质视图跨渲染复用：切应用只重建列表内容（行 / 箭头）并 resize 容器，不重造列表玻璃
+    // 每屏窗口列表容器跨渲染复用：切应用只重建列表内容（行 / 箭头）并 resize 容器，不重造列表玻璃
     private var listContainersPerScreen: [ScrollContainerView?] = []
-    private var listMaterialsPerScreen: [[NSView]] = []
+    private var listBackgroundsPerScreen: [Theme.Background?] = []
 
-    private let listScroller = ListScrollController(rowHeight: SwitcherMetrics.rowHeight)
+    private let listScroller = ListScrollController()
 
     private var onPickApp: ((Int) -> Void)?
     private var onHoverApp: ((Int) -> Void)?
@@ -85,7 +105,8 @@ final class AppSwitcherPanel {
               onPickWindow: @escaping (Int) -> Void,
               onHoverWindow: @escaping (Int) -> Void,
               onScrollApp: @escaping (Int) -> Void,
-              onCancel: @escaping () -> Void) {
+              onCancel: @escaping () -> Void,
+              makeKey: Bool = true) {
         dismiss()
 
         self.apps = apps
@@ -116,9 +137,12 @@ final class AppSwitcherPanel {
         panels.forEach { $0.orderFrontRegardless() }
         // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型：app 同一时刻
         // 只有一个 key window，跨屏玻璃聚焦靠 hover 转正 key 切换）。
-        // makeKey 系调用实测必然隐式激活 App（面板生命周期内短暂 active，接受）
-        panels.first?.makeKeyAndOrderFront(nil)
-        DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panels.first?.isKeyWindow ?? false) appActive=\(NSApp.isActive)")
+        // makeKey 系调用实测必然隐式激活 App（面板生命周期内短暂 active，接受）；
+        // 实时预览传 false：设置窗口保持 key，拖参数不被抢焦点
+        if makeKey {
+            panels.first?.makeKeyAndOrderFront(nil)
+            DiagLog.log("panel", "switcher makeKey: isKeyWindow=\(panels.first?.isKeyWindow ?? false) appActive=\(NSApp.isActive)")
+        }
     }
 
     /// tab 移动到另一个应用；windows 由调用方传入（值语义数组，面板不与 manager 共享状态）
@@ -174,9 +198,10 @@ final class AppSwitcherPanel {
         listFramesPerScreen = []
         reusableSlotsPerScreen = []
         iconContainersPerScreen = []
+        iconBackgroundsPerScreen = []
         nameLabelsPerScreen = []
         listContainersPerScreen = []
-        listMaterialsPerScreen = []
+        listBackgroundsPerScreen = []
         apps = []
         currentWindows = []
         badges = []
@@ -212,10 +237,10 @@ private extension AppSwitcherPanel {
     /// 材质装配统一在 Theme。返回材质视图供复用列表容器时保留（只重建内容、不重造玻璃）
     private func makeContainer(width: CGFloat, height: CGFloat,
                               cornerRadius: CGFloat = SwitcherMetrics.cornerRadius)
-        -> (container: ScrollContainerView, materials: [NSView]) {
+        -> (container: ScrollContainerView, background: Theme.Background) {
         let container = ScrollContainerView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        let materials = Theme.installBackground(on: container, cornerRadius: cornerRadius)
-        return (container, materials)
+        let background = Theme.installBackground(on: container, cornerRadius: cornerRadius)
+        return (container, background)
     }
 
     private func apply(_ background: NSView, to panel: NonKeyPanel, x: CGFloat, topY: CGFloat) {
@@ -250,9 +275,10 @@ private extension AppSwitcherPanel {
         var allBadgeOverlays: [NSView] = []
         var allListFrames: [NSRect] = []
         var allIconContainers: [ScrollContainerView] = []
+        var allIconBackgrounds: [Theme.Background?] = []
         var allNameLabels: [NSTextField?] = []
         var allListContainers: [ScrollContainerView?] = []
-        var allListMaterials: [[NSView]] = []
+        var allListBackgrounds: [Theme.Background?] = []
 
         for (screenIndex, screen) in NSScreen.screens.enumerated() {
             guard screenIndex < panels.count else { continue }
@@ -287,10 +313,10 @@ private extension AppSwitcherPanel {
                 allArrows.append(list.arrows)
                 allListFrames.append(list.frame)
                 allListContainers.append(list.container)
-                allListMaterials.append(list.materials)
+                allListBackgrounds.append(list.background)
             } else {
                 allListContainers.append(nil)
-                allListMaterials.append([])
+                allListBackgrounds.append(nil)
             }
 
             // 透明间隙点击层：union 矩形内、各容器之外的区域视觉透明，但点击
@@ -305,6 +331,7 @@ private extension AppSwitcherPanel {
             allSlots.append(icon.slots)
             allBadgeOverlays.append(icon.badgeOverlay)
             allIconContainers.append(icon.container)
+            allIconBackgrounds.append(icon.background)
             allNameLabels.append(icon.nameLabel)
 
             // union 顶部恒为图标行顶：窗口向下生长，图标行屏幕位置恒定
@@ -318,29 +345,29 @@ private extension AppSwitcherPanel {
         reusableSlotsPerScreen = allSlots
         badgeOverlaysPerScreen = allBadgeOverlays
         iconContainersPerScreen = allIconContainers
+        iconBackgroundsPerScreen = allIconBackgrounds
         nameLabelsPerScreen = allNameLabels
         listContainersPerScreen = allListContainers
-        listMaterialsPerScreen = allListMaterials
+        listBackgroundsPerScreen = allListBackgrounds
         listFramesPerScreen = allListFrames
         listScroller.onOffsetChanged = { [weak self] in self?.updateScrollArrows() }
-        listScroller.attach(contents: scrollContents,
-                            contentHeight: contentHeight, clipHeight: clipHeight)
+        listScroller.attach(contents: scrollContents, rowHeight: SwitcherMetrics.rowHeight,
+                            total: total, shown: shownCount)
         updateScrollArrows()
     }
 
     /// 布局图标行（不落窗口）：返回容器、屏幕坐标矩形、槽位、角标高层、高亮图标中心横坐标、名称 label。
     /// 图标行几何在一次会话内恒定（应用数 / 屏幕不变），故容器（含液态玻璃）跨渲染复用，切换应用不重建玻璃
     private func layoutIconPanel(on screen: NSScreen, screenIndex: Int, hoverGate: MouseHoverGate)
-        -> (container: ScrollContainerView, frame: NSRect,
+        -> (container: ScrollContainerView, background: Theme.Background?, frame: NSRect,
             slots: [IconSlotView], badgeOverlay: NSView,
             highlightedCenter: CGFloat, nameLabel: NSTextField?) {
         let visibleFrame = screen.visibleFrame
 
-        // 单行布局：图标大小随应用数量缩放；达到上限后不再放大，面板宽度紧贴图标总宽
+        // 单行布局：图标大小随应用数量缩放；达到上限后不再放大（下限可选），面板宽度紧贴图标总宽
         let count = max(CGFloat(apps.count), 1)
         let availableWidth = visibleFrame.width - SwitcherMetrics.panelSideMargin * 2
-        let slot = min(SwitcherMetrics.iconSizeMax,
-                       (availableWidth - SwitcherMetrics.iconGap * (count - 1)) / count)
+        let slot = SwitcherMetrics.iconSlotSize(count: apps.count, availableWidth: availableWidth)
         let iconPanelWidth = slot * count + SwitcherMetrics.iconGap * (count - 1)
             + SwitcherMetrics.iconInset * 2
         // 图标垂直居中：下方留白（间距 + 文字 + 底部留白）与顶部留白相等
@@ -357,11 +384,18 @@ private extension AppSwitcherPanel {
             ? badgeOverlaysPerScreen[screenIndex] : nil
 
         let background: ScrollContainerView
+        let themeBackground: Theme.Background?
+        let contentHost: NSView
         let slots: [IconSlotView]
         let badgeOverlay: NSView
         if let cachedContainer, let cachedSlots, let cachedOverlay, cachedSlots.count == apps.count {
             // 复用容器（含玻璃、槽位、角标高层）：只更新选中态，绝不重建材质层
             background = cachedContainer
+            let cachedBackground = iconBackgroundsPerScreen.indices.contains(screenIndex)
+                ? iconBackgroundsPerScreen[screenIndex] : nil
+            themeBackground = cachedBackground
+            // 内容宿主：首建时存入；异常缺失时退化为容器本身
+            contentHost = cachedBackground?.contentHost ?? cachedContainer
             slots = cachedSlots
             badgeOverlay = cachedOverlay
             slots.enumerated().forEach { $1.setSelected($0 == appIndex) }
@@ -370,12 +404,15 @@ private extension AppSwitcherPanel {
                 nameLabelsPerScreen[screenIndex]?.removeFromSuperview()
             }
         } else {
-            background = makeContainer(width: iconPanelWidth, height: iconPanelHeight).container
+            let made = makeContainer(width: iconPanelWidth, height: iconPanelHeight)
+            background = made.container
+            themeBackground = made.background
+            contentHost = made.background.contentHost
             background.onScrollStep = { [weak self] in self?.onScrollApp?($0) }
-            slots = buildOrReuseSlots(cachedSlots, in: background, slot: slot, iconY: iconY, hoverGate: hoverGate)
-            let overlay = BadgeOverlayView(frame: background.bounds)
+            slots = buildOrReuseSlots(cachedSlots, in: contentHost, slot: slot, iconY: iconY, hoverGate: hoverGate)
+            let overlay = BadgeOverlayView(frame: contentHost.bounds)
             overlay.autoresizingMask = [.width, .height]
-            background.addSubview(overlay)
+            contentHost.addSubview(overlay)
             badgeOverlay = overlay
         }
 
@@ -384,7 +421,7 @@ private extension AppSwitcherPanel {
         if apps.indices.contains(appIndex) {
             let iconCenterX = SwitcherMetrics.iconInset
                 + CGFloat(appIndex) * (slot + SwitcherMetrics.iconGap) + slot / 2
-            nameLabel = addNameLabel(apps[appIndex].name, to: background,
+            nameLabel = addNameLabel(apps[appIndex].name, to: contentHost,
                                      centerX: iconCenterX, panelWidth: iconPanelWidth,
                                      y: SwitcherMetrics.nameBottomInset, height: nameHeight)
         }
@@ -397,7 +434,7 @@ private extension AppSwitcherPanel {
             + CGFloat(appIndex) * (slot + SwitcherMetrics.iconGap) + slot / 2
         let frame = NSRect(x: iconPanelX, y: iconPanelTop - iconPanelHeight,
                            width: iconPanelWidth, height: iconPanelHeight)
-        return (background, frame, slots, badgeOverlay, highlightedCenter, nameLabel)
+        return (background, themeBackground, frame, slots, badgeOverlay, highlightedCenter, nameLabel)
     }
 
     /// 首次或应用数变化时新建槽位；已有则挪到容器并更新位置 / 高亮（切换应用不重建图标视图）
@@ -479,7 +516,7 @@ private extension AppSwitcherPanel {
                                  hoverGate: MouseHoverGate)
         -> (container: ScrollContainerView, frame: NSRect,
             rows: [WindowRowView], scrollContent: NSView,
-            arrows: (up: NSImageView, down: NSImageView), materials: [NSView])? {
+            arrows: (up: NSImageView, down: NSImageView), background: Theme.Background)? {
 
         let total = currentWindows.count
         guard total > 0, let appIcon = apps.indices.contains(appIndex) ? apps[appIndex].icon : nil else {
@@ -488,32 +525,32 @@ private extension AppSwitcherPanel {
 
         // 列表宽度按全部窗口的最长标题自适应，滚动露出旧行时宽度同样合适
         let maxTitleWidth = currentWindows
-            .map { ($0.title as NSString).size(withAttributes: [.font: SwitcherMetrics.titleFont]).width }
+            .map { ($0.title as NSString).size(withAttributes: [.font: SwitcherMetrics.listFont]).width }
             .max() ?? 0
         let listWidth = min(SwitcherMetrics.listWidthMax,
-                            max(SwitcherMetrics.listWidthMin, maxTitleWidth + 54))
+                            max(SwitcherMetrics.listWidthMin, maxTitleWidth + SwitcherMetrics.listWidthPadding))
         let height = clipHeight + SwitcherMetrics.edgeInset * 2
         // 列表内容宽 listWidth，面板宽加两侧边距；行占满面板宽（两侧边距可点击），高亮块由行内 contentInset 内缩
         let panelWidth = listWidth + SwitcherMetrics.edgeInset * 2
 
-        // 复用列表容器（含玻璃）：保留材质、清掉上次的 clip/箭头，随后重建内容并 resize；
-        // 首次或上次该屏无列表时才新建
+        // 复用列表容器（含玻璃）：保留材质、清掉上次的内容（内容都在 contentHost 里，
+        // 清空不会触及背景层——垫层嵌在 contentHost 之外，Theme 结构保证），
+        // 随后重建并 resize；首次或上次该屏无列表时才新建
         let background: ScrollContainerView
-        let materials: [NSView]
+        let themeBackground: Theme.Background
         if let cached = (listContainersPerScreen.indices.contains(screenIndex)
                             ? listContainersPerScreen[screenIndex] : nil),
-           listMaterialsPerScreen.indices.contains(screenIndex) {
+           listBackgroundsPerScreen.indices.contains(screenIndex),
+           let cachedBackground = listBackgroundsPerScreen[screenIndex] {
             background = cached
-            materials = listMaterialsPerScreen[screenIndex]
-            background.subviews
-                .filter { sub in !materials.contains { $0 === sub } }
-                .forEach { $0.removeFromSuperview() }
+            themeBackground = cachedBackground
+            cachedBackground.contentHost.subviews.forEach { $0.removeFromSuperview() }
             background.setFrameSize(NSSize(width: panelWidth, height: height))
         } else {
             let made = makeContainer(width: panelWidth, height: height,
                                      cornerRadius: SwitcherMetrics.listCornerRadius)
             background = made.container
-            materials = made.materials
+            themeBackground = made.background
         }
         background.onScrollRaw = { [weak self] in self?.listScroller.scroll(by: $0) }
 
@@ -522,7 +559,7 @@ private extension AppSwitcherPanel {
                                         width: panelWidth, height: clipHeight))
         clip.wantsLayer = true
         clip.layer?.masksToBounds = true
-        background.addSubview(clip)
+        themeBackground.contentHost.addSubview(clip)
 
         let content = NSView(frame: NSRect(x: 0, y: clipHeight - contentHeight,
                                            width: panelWidth, height: contentHeight))
@@ -531,6 +568,8 @@ private extension AppSwitcherPanel {
             let row = WindowRowView(index: index, icon: appIcon, title: item.title,
                                     width: panelWidth,
                                     contentInset: SwitcherMetrics.edgeInset,
+                                    font: SwitcherMetrics.listFont,
+                                    rowHeight: SwitcherMetrics.rowHeight,
                                     hoverGate: hoverGate,
                                     onHover: { [weak self] in self?.onHoverWindow?($0) },
                                     onClick: { [weak self] in self?.onPickWindow?($0) })
@@ -547,8 +586,8 @@ private extension AppSwitcherPanel {
         let arrowX = panelWidth / 2 - 6
         let up = NSImageView.scrollIndicator(symbol: "chevron.up", x: arrowX, y: height - 13)
         let down = NSImageView.scrollIndicator(symbol: "chevron.down", x: arrowX, y: 1)
-        background.addSubview(up)
-        background.addSubview(down)
+        themeBackground.contentHost.addSubview(up)
+        themeBackground.contentHost.addSubview(down)
 
         // 顶边对齐传入锚点，越出屏幕时横向夹回该屏可见范围
         let visibleFrame = screen.visibleFrame
@@ -558,7 +597,7 @@ private extension AppSwitcherPanel {
                            y: topY - height,
                            width: panelWidth, height: height)
 
-        return (background, frame, rows, content, (up, down), materials)
+        return (background, frame, rows, content, (up, down), themeBackground)
     }
 
     private func updateScrollArrows() {
@@ -637,7 +676,8 @@ private final class IconSlotView: NSView {
 
         wantsLayer = true
         // 关闭隐式动画：切换重建时高亮层直接就位，不做淡入/位移动画
-        highlightLayer.actions = ["backgroundColor": NSNull(), "bounds": NSNull(),
+        highlightLayer.actions = ["backgroundColor": NSNull(), "borderColor": NSNull(),
+                                  "borderWidth": NSNull(), "bounds": NSNull(),
                                   "position": NSNull(), "cornerRadius": NSNull()]
         // 高亮圆角用连续曲线（squircle），与 macOS 应用图标的超椭圆圆角同族；
         // 默认 .circular 圆弧在同半径下弧度与图标不一致，视觉上对不齐
@@ -660,11 +700,17 @@ private final class IconSlotView: NSView {
     }
 
     func setSelected(_ selected: Bool) {
-        // 选中样式为透明稍暗的底色（玻璃上的暗色半透明块，深浅外观下都是「压暗」），
-        // 画在内缩的高亮层上（范围小于槽位，贴近图标）
-        highlightLayer.backgroundColor = selected
-            ? NSColor.black.withAlphaComponent(0.2).cgColor
-            : nil
+        // 选中态：灰色玻璃胶囊（灰色填充 + 灰色描边）；用 50% 灰而非黑/白：
+        // 浅色面板上偏深、深色面板上偏浅，两种模式下都可见。
+        // 填充不透明度按实测反馈调实（28% → 42%）：浅色托盘上更「实」、选中更醒目
+        if selected {
+            highlightLayer.backgroundColor = NSColor.gray.withAlphaComponent(0.42).cgColor
+            highlightLayer.borderColor = NSColor.gray.withAlphaComponent(0.55).cgColor
+            highlightLayer.borderWidth = 1
+        } else {
+            highlightLayer.backgroundColor = nil
+            highlightLayer.borderWidth = 0
+        }
     }
 
     /// 生成定位好的角标（本视图坐标系）；text 为空或 frame 未就绪时返回 nil。
@@ -803,8 +849,8 @@ private final class IconSlotView: NSView {
 private final class BadgeView: NSView {
 
     init(text: String, iconSize: CGFloat) {
-        // 全套尺寸按胶囊高度等比推导；基准 154 槽位 ≈ 48pt（约为图标的 1/3）
-        let height = min(max(iconSize * 48 / 154, 24), 48)
+        // 全套尺寸按胶囊高度等比推导；高度随图标尺寸缩放、基准跟随配置的图标最大尺寸
+        let height = SwitcherMetrics.badgeHeight(forIconSize: iconSize)
         let font = NSFont.systemFont(ofSize: height * 2 / 3, weight: .semibold)
         let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
 
