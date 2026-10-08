@@ -38,6 +38,15 @@ final class SettingsLayoutTests: XCTestCase {
         return nil
     }
 
+    private func findViews<T: NSView>(_ type: T.Type, in view: NSView, where predicate: (T) -> Bool) -> [T] {
+        var found: [T] = []
+        if let match = view as? T, predicate(match) { found.append(match) }
+        for subview in view.subviews {
+            found.append(contentsOf: findViews(type, in: subview, where: predicate))
+        }
+        return found
+    }
+
     private func makeRoots() throws -> (controller: SettingsWindowController, stack: NSStackView, tabs: NSSegmentedControl) {
         let controller = makeController()
         let window = try XCTUnwrap(controller.window)
@@ -57,26 +66,28 @@ final class SettingsLayoutTests: XCTestCase {
 
     func testTabsShowOnlyTheirSections() throws {
         let (_, stack, tabs) = try makeRoots()
-        XCTAssertEqual(stack.arrangedSubviews.count, 6, "应有 通用/更新/快捷键/预览/面板几何/高级几何 六个分组")
-        XCTAssertEqual(tabs.segmentCount, 4, "应有 通用/更新/快捷键/面板与图标 四个 Tab")
+        // 分组顺序：行为 / 外观 / 启动与诊断 / 面板几何 / 高级几何 / 快捷键 / 更新
+        XCTAssertEqual(stack.arrangedSubviews.count, 7, "应有七个分组")
+        XCTAssertEqual(tabs.segmentCount, 4, "应有 通用/面板/快捷键/更新 四个 Tab")
 
-        // 初始（通用 Tab）：只有第 0 个分组可见
-        XCTAssertFalse(stack.arrangedSubviews[0].isHidden)
-        for section in stack.arrangedSubviews.dropFirst() {
+        // 初始（通用 Tab）：前三个分组可见（行为 / 外观 / 启动与诊断）
+        for index in 0..<3 {
+            XCTAssertFalse(stack.arrangedSubviews[index].isHidden, "通用 Tab 的第 \(index) 个分组应可见")
+        }
+        for section in stack.arrangedSubviews.dropFirst(3) {
             XCTAssertTrue(section.isHidden, "非当前 Tab 的分组应隐藏")
         }
 
-        // 切到「面板与图标」：预览 + 几何分组可见；高级分组仍受折叠开关约束
-        selectTab(tabs, 3)
-        XCTAssertTrue(stack.arrangedSubviews[0].isHidden)
-        XCTAssertFalse(stack.arrangedSubviews[3].isHidden, "预览分组应可见")
-        XCTAssertFalse(stack.arrangedSubviews[4].isHidden, "几何分组应可见")
-        XCTAssertTrue(stack.arrangedSubviews[5].isHidden, "高级分组默认仍折叠")
+        // 面板 Tab：面板几何与高级几何同页（分两组呈现）
+        selectTab(tabs, 1)
+        XCTAssertFalse(stack.arrangedSubviews[3].isHidden, "面板几何应可见")
+        XCTAssertFalse(stack.arrangedSubviews[4].isHidden, "高级几何应与面板几何同页可见")
+        XCTAssertTrue(stack.arrangedSubviews[0].isHidden, "通用分组不该在面板 Tab 显示")
 
         // 切回通用
         selectTab(tabs, 0)
         XCTAssertFalse(stack.arrangedSubviews[0].isHidden)
-        XCTAssertTrue(stack.arrangedSubviews[4].isHidden)
+        XCTAssertTrue(stack.arrangedSubviews[3].isHidden)
     }
 
     func testSectionsFillContainerWidth() throws {
@@ -98,42 +109,25 @@ final class SettingsLayoutTests: XCTestCase {
     func testGeometryControlsCoverAllTuningParameters() throws {
         let (_, stack, _) = try makeRoots()
 
-        // 只统计「面板与图标」Tab 的两个几何分组：通用分组里有垫层强度滑杆等其他滑杆，
-        // 全窗计数会把它们算进来（曾因此误报 21 != 20）
-        let geometry = stack.arrangedSubviews[4]
-        let advanced = stack.arrangedSubviews[5]
+        // 只统计「面板几何 + 高级几何」两个分组：通用 Tab 里有面板不透明度等着色滑杆，
+        // 全窗计数会把它们算进来
+        let geometry = stack.arrangedSubviews[3]
+        let advanced = stack.arrangedSubviews[4]
         let sliders = countSubviews(ofType: NSSlider.self, in: geometry)
             + countSubviews(ofType: NSSlider.self, in: advanced)
         XCTAssertEqual(sliders, Tuning.all.count, "每个几何参数都应有一个滑杆")
     }
 
-    /// 通用 Tab 的垫层强度滑杆应反映存储值（0–1 连续值，0 = 关闭）
-    func testBlurStrengthSliderReflectsStoredValue() throws {
-        Settings.glassUnderBlurStrength = 0.25
-        defer { Settings.glassUnderBlurStrength = 1 }
+    /// 通用 Tab 的面板不透明度滑杆应反映存储值（0–1 连续值，1 = 最不透明）
+    func testPanelAlphaSliderReflectsStoredValue() throws {
+        Settings.panelAlpha = 0.25
+        defer { Settings.panelAlpha = 1 }
 
         let (_, stack, _) = try makeRoots()
-        let slider = try XCTUnwrap(
-            findView(NSSlider.self, in: stack.arrangedSubviews[0], where: { $0.minValue == 0 && $0.maxValue == 1 }),
-            "通用分组应存在垫层强度滑杆"
-        )
-        XCTAssertEqual(slider.doubleValue, 0.25, accuracy: 0.0001)
-    }
-
-    func testAdvancedToggleExpandsAndCollapsesSection() throws {
-        let (_, stack, tabs) = try makeRoots()
-        selectTab(tabs, 3)
-        let advanced = stack.arrangedSubviews[5]
-
-        let checkbox = try XCTUnwrap(
-            findView(NSButton.self, in: stack, where: { $0.title == "显示高级参数" }),
-            "应存在高级参数勾选框"
-        )
-        checkbox.performClick(nil)
-        XCTAssertFalse(advanced.isHidden, "勾选后高级几何应展开")
-
-        checkbox.performClick(nil)
-        XCTAssertTrue(advanced.isHidden, "取消勾选后应重新折叠")
+        let sliders = findViews(NSSlider.self, in: stack.arrangedSubviews[1],
+                                where: { $0.minValue == 0 && $0.maxValue == 1 })
+        XCTAssertTrue(sliders.contains { abs($0.doubleValue - 0.25) < 0.0001 },
+                      "外观分组应有滑杆显示存储的不透明度 0.25")
     }
 
     func testWindowHeightCappedByScreen() throws {
@@ -152,37 +146,23 @@ final class SettingsLayoutTests: XCTestCase {
         XCTAssertEqual(content.frame.width, 560, accuracy: 0.5)
     }
 
-    /// 玻璃模式控件应反映存储的档位（构建路径）
-    func testGlassControlReflectsStoredMode() throws {
-        Settings.glassMode = .clear
-        defer { Settings.glassMode = .regular }
-
-        let controller = makeController()
-        let content = try XCTUnwrap(controller.window?.contentView)
-        let glassControl = try XCTUnwrap(
-            findView(NSSegmentedControl.self, in: content, where: { $0.segmentCount == 3 }),
-            "应存在 3 段玻璃模式控件"
-        )
-        XCTAssertEqual(glassControl.selectedSegment, 1, "存储 clear 时控件应选中第 2 段")
-    }
-
-    /// 玻璃模式切换会重建背景材质：材质必须重排到最底层，不得盖住 Tab 控件
+    /// 背景材质重建后仍须排在最底层，不得盖住 Tab 控件
     /// （曾出过：材质只放到滚动视图之下，把位于其间的 Tab 分段控件遮住）
-    func testGlassModeSwitchKeepsTabControlOnTop() throws {
+    func testBackgroundRebuildKeepsTabControlOnTop() throws {
         let controller = makeController()
         let content = try XCTUnwrap(controller.window?.contentView)
         let tabs = try XCTUnwrap(
             findView(NSSegmentedControl.self, in: content, where: { $0.segmentCount == 4 }),
             "应存在 4 段 Tab 控件"
         )
-        let glassControl = try XCTUnwrap(
-            findView(NSSegmentedControl.self, in: content, where: { $0.segmentCount == 3 }),
-            "应存在 3 段玻璃模式控件"
+        let slider = try XCTUnwrap(
+            findView(NSSlider.self, in: content, where: { $0.minValue == 0 && $0.maxValue == 1 }),
+            "通用分组应存在背景滑杆"
         )
 
-        // 切一次玻璃模式，触发 rebuildBackground
-        glassControl.selectedSegment = (glassControl.selectedSegment + 1) % 3
-        glassControl.sendAction(glassControl.action, to: glassControl.target)
+        // 拖一次滑杆，触发 rebuildBackground
+        slider.doubleValue = 0.6
+        slider.sendAction(slider.action, to: slider.target)
 
         guard let tabsIndex = content.subviews.firstIndex(of: tabs) else {
             return XCTFail("Tab 控件不在内容视图里")

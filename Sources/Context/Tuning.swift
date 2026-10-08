@@ -81,27 +81,31 @@ struct TuningSpec {
 }
 
 /// 面板几何参数目录：默认值即当前设计基线（改造时与旧硬编码常量一致，
-/// 之后按实测反馈微调过：圆角 26→40、图标行内边距 24→36 等）
+/// 之后按实测反馈微调过：圆角 26→40、图标行内边距 24→36 等；
+/// 2026-10 对系统 cmd+tab 做了一次像素级实拍校准：图标 154→90、间距 12→5、侧边留白 48→36、
+/// 应用名 12→13 与底部留白 5→6——校准依据与测量脚本见 docs 或会话记录）
 enum Tuning {
-    static let iconSizeMax = TuningValue(key: "tuning.iconSizeMax", default: 154, range: 72...256, step: 2)
+    static let iconSizeMax = TuningValue(key: "tuning.iconSizeMax", default: 90, range: 72...256, step: 2)
     static let rowHeight = TuningValue(key: "tuning.rowHeight", default: 34, range: 20...80, step: 1, isInteger: true)
     static let maxListRows = TuningValue(key: "tuning.maxListRows", default: 8, range: 1...20, step: 1, isInteger: true)
     static let panelWidth = TuningValue(key: "tuning.panelWidth", default: 520, range: 300...1200, step: 10, isInteger: true)
     static let listFontSize = TuningValue(key: "tuning.listFontSize", default: 13, range: 10...20, step: 1, isInteger: true)
-    static let iconGap = TuningValue(key: "tuning.iconGap", default: 12, range: 0...48, step: 1)
+    static let iconGap = TuningValue(key: "tuning.iconGap", default: 5, range: 0...48, step: 1)
     static let cornerRadius = TuningValue(key: "tuning.cornerRadius", default: 40, range: 0...48, step: 1)
     static let listCornerRadius = TuningValue(key: "tuning.listCornerRadius", default: 16, range: 0...48, step: 1)
     static let iconSizeMin = TuningValue(key: "tuning.iconSizeMin", default: 0, range: 0...200, step: 2)
-    static let iconInset = TuningValue(key: "tuning.iconInset", default: 36, range: 0...64, step: 2)
-    static let panelSideMargin = TuningValue(key: "tuning.panelSideMargin", default: 48, range: 0...200, step: 2)
+    static let iconInset = TuningValue(key: "tuning.iconInset", default: 28, range: 0...64, step: 2)
+    static let backdropBlurRadius = TuningValue(key: "tuning.backdropBlurRadius", default: 0, range: 0...64, step: 2)
+    static let panelVerticalPadding = TuningValue(key: "tuning.panelVerticalPadding", default: 4, range: 0...40, step: 2)
+    static let panelSideMargin = TuningValue(key: "tuning.panelSideMargin", default: 87, range: 0...200, step: 2)
     static let panelGap = TuningValue(key: "tuning.panelGap", default: 6, range: 0...40, step: 1)
     static let edgeInset = TuningValue(key: "tuning.edgeInset", default: 8, range: 0...24, step: 1)
     static let listWidthMin = TuningValue(key: "tuning.listWidthMin", default: 180, range: 120...400, step: 4)
     static let listWidthMax = TuningValue(key: "tuning.listWidthMax", default: 360, range: 200...800, step: 8)
     static let listWidthPadding = TuningValue(key: "tuning.listWidthPadding", default: 54, range: 20...120, step: 2)
-    static let nameFontSize = TuningValue(key: "tuning.nameFontSize", default: 12, range: 8...20, step: 1, isInteger: true)
+    static let nameFontSize = TuningValue(key: "tuning.nameFontSize", default: 13, range: 8...20, step: 1, isInteger: true)
     static let nameGap = TuningValue(key: "tuning.nameGap", default: 1, range: 0...20, step: 1)
-    static let nameBottomInset = TuningValue(key: "tuning.nameBottomInset", default: 5, range: 0...30, step: 1)
+    static let nameBottomInset = TuningValue(key: "tuning.nameBottomInset", default: 6, range: 0...30, step: 1)
     static let heightRatio = TuningValue(key: "tuning.heightRatio", default: 0.70, range: 0.30...0.95, step: 0.05)
 
     static let all: [TuningSpec] = [
@@ -115,6 +119,12 @@ enum Tuning {
         TuningSpec(value: listCornerRadius, title: "列表圆角", subtitle: nil, group: .common, unit: "pt", displayScale: 1),
         TuningSpec(value: iconSizeMin, title: "图标最小尺寸", subtitle: "应用多到图标被压缩时才生效；0 = 不限制", group: .advanced, unit: "pt", displayScale: 1),
         TuningSpec(value: iconInset, title: "图标行内边距", subtitle: nil, group: .advanced, unit: "pt", displayScale: 1),
+        TuningSpec(value: panelVerticalPadding, title: "面板上下留白",
+                   subtitle: "图标托盘在名称区之外额外加的高度（上下对称）；只影响托盘高度",
+                   group: .common, unit: "pt", displayScale: 1),
+        TuningSpec(value: backdropBlurRadius, title: "面板背后模糊加强",
+                   subtitle: "叠模糊层数：每 16pt 加一层，层数越多越糊；0 = 不额外加层",
+                   group: .advanced, unit: "pt", displayScale: 1),
         TuningSpec(value: panelSideMargin, title: "面板侧边留白", subtitle: nil, group: .advanced, unit: "pt", displayScale: 1),
         TuningSpec(value: panelGap, title: "面板间距", subtitle: nil, group: .advanced, unit: "pt", displayScale: 1),
         TuningSpec(value: edgeInset, title: "列表内边距", subtitle: nil, group: .advanced, unit: "pt", displayScale: 1),

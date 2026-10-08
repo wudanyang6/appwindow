@@ -26,10 +26,13 @@ enum SwitcherMetrics {
     static var listFont: NSFont { .systemFont(ofSize: Tuning.listFontSize.value) }
     // 选中应用名称：托盘内图标下方的文字（字号 + 图标与文字之间的间距）。
     // nameGap 调小 = 文字上移、更贴近图标；托盘高度随之收缩（上下留白居中对称，底部留白不变）
-    static var nameFont: NSFont { .systemFont(ofSize: Tuning.nameFontSize.value, weight: .medium) }
+    // 字重 semibold：系统切换器的名称笔画更粗（实拍笔画/字号比 ≈0.11，regular≈0.08、semibold≈0.11）
+    static var nameFont: NSFont { .systemFont(ofSize: Tuning.nameFontSize.value, weight: .semibold) }
     static var nameGap: CGFloat { Tuning.nameGap.value }
     // 名称距托盘底边的留白：同时也是图标上方留白（居中对称），调大即整体托盘变高
     static var nameBottomInset: CGFloat { Tuning.nameBottomInset.value }
+    // 托盘上下留白：在名称区之外额外加的高度（上下对称），只影响托盘高度、不动图标与文字的相对位置
+    static var panelVerticalPadding: CGFloat { Tuning.panelVerticalPadding.value }
     // 列表宽度按最长标题自适应时的补偿余量
     static var listWidthPadding: CGFloat { Tuning.listWidthPadding.value }
 
@@ -77,8 +80,14 @@ final class AppSwitcherPanel {
     // 每屏图标槽位视图跨渲染复用：切换应用不重建图标视图（避免重图标 iDev 每次重绘闪烁，也更快）
     private var reusableSlotsPerScreen: [[IconSlotView]] = []
     // 每屏图标行容器（含液态玻璃）跨渲染复用：切换应用只更新高亮/名称/角标，不重建玻璃材质层
-    // （NSGlassEffectView 实例化要分配 GPU 后备 surface，是连续切换掉帧的主要来源）
+    // （NSVisualEffectView 实例化要分配 GPU 后备 surface，是连续切换掉帧的主要来源）
     private var iconContainersPerScreen: [ScrollContainerView] = []
+    // 上次构建材质层时的背景代次：与 Theme.backgroundGeneration 不一致说明玻璃偏好改过，
+    // 复用缓存作废（见 prepare）
+    private var builtBackgroundGeneration = -1
+    // 上次构建材质层时的系统外观：外观变了同样要重建（scrim 颜色是按外观解析的 CGColor，
+    // 图层颜色不随外观自动重解析，不重建会一直用旧外观的垫层）
+    private var builtAppearance: NSAppearance.Name?
     // 每屏图标行/列表的 Theme.Background（内容宿主 + 材质视图）跨渲染复用
     private var iconBackgroundsPerScreen: [Theme.Background?] = []
     // 每屏当前的应用名 label：复用容器时先移除旧的再放新的，避免叠加
@@ -98,17 +107,18 @@ final class AppSwitcherPanel {
     private var onCancel: (() -> Void)?
     private var hoverGate: MouseHoverGate?
 
-    func show(apps: [SwitcherApp], appIndex: Int, windows: [WindowItem], windowIndex: Int?,
-              badges: [String?],
-              onPickApp: @escaping (Int) -> Void,
-              onHoverApp: @escaping (Int) -> Void,
-              onPickWindow: @escaping (Int) -> Void,
-              onHoverWindow: @escaping (Int) -> Void,
-              onScrollApp: @escaping (Int) -> Void,
-              onCancel: @escaping () -> Void,
-              makeKey: Bool = true) {
+    /// 构建面板（建窗 + 渲染），但不显示。与 present 拆开是为了与「延迟显示面板」的
+    /// 等待并行：构建耗的几十毫秒藏在等待里，到点只做上屏，面板实际出现时间因此提前。
+    /// 快速点按（到点前就松开）会连面板一起丢弃，代价是白做一次构建
+    func prepare(apps: [SwitcherApp], appIndex: Int, windows: [WindowItem], windowIndex: Int?,
+                 badges: [String?],
+                 onPickApp: @escaping (Int) -> Void,
+                 onHoverApp: @escaping (Int) -> Void,
+                 onPickWindow: @escaping (Int) -> Void,
+                 onHoverWindow: @escaping (Int) -> Void,
+                 onScrollApp: @escaping (Int) -> Void,
+                 onCancel: @escaping () -> Void) {
         dismiss()
-
         self.apps = apps
         self.appIndex = appIndex
         self.currentWindows = windows
@@ -122,16 +132,51 @@ final class AppSwitcherPanel {
         self.onCancel = onCancel
         hoverGate = MouseHoverGate()
 
-        for (screenIndex, _) in NSScreen.screens.enumerated() {
-            let panel = NonKeyPanel(contentRect: .zero,
-                                    styleMask: [.borderless, .nonactivatingPanel],
-                                    backing: .buffered, defer: false)
-            panel.identifier = NSUserInterfaceItemIdentifier("switcher-\(screenIndex)")
-            configure(panel)
-            panels.append(panel)
+        // 复用缓存作废的两种情形：玻璃偏好改过（设置窗口里调了模式/着色量/垫层强度）、
+        // 系统外观变了（scrim 颜色是按外观解析的 CGColor，图层颜色不随外观自动重解析）。
+        // 面板窗口本身仍复用——贵的是窗口的 surface/阴影，不是内容
+        let appearance = NSApp.effectiveAppearance
+        if builtBackgroundGeneration != Theme.backgroundGeneration
+            || builtAppearance != appearance.name {
+            builtBackgroundGeneration = Theme.backgroundGeneration
+            builtAppearance = appearance.name
+            dropReusableContainers()
+        }
+
+        // 复用上次会话留下的面板窗口（含容器与材质层）；数量与屏幕数不一致说明显示器变化，
+        // 此时连同复用缓存一起销毁重建
+        if !panels.isEmpty, panels.count != NSScreen.screens.count {
+            panels.forEach { $0.close() }
+            panels = []
+            dropReusableContainers()
+        }
+        if panels.isEmpty {
+            for (screenIndex, _) in NSScreen.screens.enumerated() {
+                let panel = NonKeyPanel(contentRect: .zero,
+                                        styleMask: [.borderless, .nonactivatingPanel],
+                                        backing: .buffered, defer: false)
+                panel.identifier = NSUserInterfaceItemIdentifier("switcher-\(screenIndex)")
+                configure(panel)
+                panels.append(panel)
+            }
         }
 
         render()
+    }
+
+    /// 诊断用：任一面板是否被窗口服务器标为「可见」（定位上屏慢时区分窗口服务器 / 自身绘制）
+    var isAnyPanelOcclusionVisible: Bool {
+        panels.contains { $0.occlusionState.contains(.visible) }
+    }
+
+    /// 首屏图标槽位的 frame（测试用：校验几何变化后槽位是否重排/重建）
+    var iconSlotFrames: [NSRect] {
+        (iconSlotsPerScreen.first ?? []).map(\.frame)
+    }
+
+    /// 上屏。prepare 之后调用；到点前会话已结束时面板已清空，此处自然 no-op
+    func present(makeKey: Bool = true) {
+        guard !panels.isEmpty else { return }
 
         // 无入场动画，优先性能
         panels.forEach { $0.orderFrontRegardless() }
@@ -188,20 +233,16 @@ final class AppSwitcherPanel {
         listScroller.scroll(by: delta)
     }
 
+    /// 收起面板：**只隐藏，不销毁**。窗口、每屏容器与材质层都留给下次会话复用——
+    /// 窗口服务器对「新窗口首次上屏」要做 surface 分配 + 阴影/材质初始化，冷路径实测 1-2 秒
+    /// （用户反馈「面板出现慢」，对照实验：系统自带切换器因窗口常驻而很快）。
+    /// 屏幕数变化时由 prepare 的显示器变化分支真正销毁
     func dismiss() {
         panels.forEach { $0.orderOut(nil) }
-        panels = []
         rowViewsPerScreen = []
         arrowsPerScreen = []
         iconSlotsPerScreen = []
-        badgeOverlaysPerScreen = []
         listFramesPerScreen = []
-        reusableSlotsPerScreen = []
-        iconContainersPerScreen = []
-        iconBackgroundsPerScreen = []
-        nameLabelsPerScreen = []
-        listContainersPerScreen = []
-        listBackgroundsPerScreen = []
         apps = []
         currentWindows = []
         badges = []
@@ -211,8 +252,19 @@ final class AppSwitcherPanel {
         onScrollApp = nil
         onCancel = nil
         hoverGate = nil
-        NonKeyPanel.forceCloseVisible(prefix: "switcher-")
+        NonKeyPanel.forceCloseVisible(prefix: "switcher-", excluding: panels)
         IconSlotView.clearOpaqueBoundsCache()
+    }
+
+    /// 丢弃跨渲染复用的容器与材质缓存：下次 render 全部重建（面板窗口仍复用）
+    private func dropReusableContainers() {
+        reusableSlotsPerScreen = []
+        iconContainersPerScreen = []
+        iconBackgroundsPerScreen = []
+        nameLabelsPerScreen = []
+        badgeOverlaysPerScreen = []
+        listContainersPerScreen = []
+        listBackgroundsPerScreen = []
     }
 }
 
@@ -224,7 +276,8 @@ private extension AppSwitcherPanel {
         panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // 不开窗口投影：面板靠玻璃自身的高光边与背景分层（对齐系统切换器观感，用户指定）
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.ignoresMouseEvents = false
@@ -262,6 +315,12 @@ private extension AppSwitcherPanel {
 
     private func render() {
         guard !panels.isEmpty, let hoverGate else { return }
+        // 诊断：render 会替换 contentView（重建容器与材质层），耗时直接决定面板可见时间
+        let renderStart = ProcessInfo.processInfo.systemUptime
+        defer {
+            DiagLog.log("panel", "render 用时 "
+                + "\(Int((ProcessInfo.processInfo.systemUptime - renderStart) * 1000))ms")
+        }
 
         let total = currentWindows.count
         let shownCount = min(SwitcherMetrics.maxListRows, total)
@@ -373,6 +432,7 @@ private extension AppSwitcherPanel {
         // 图标垂直居中：下方留白（间距 + 文字 + 底部留白）与顶部留白相等
         let nameHeight = nameTextHeight()
         let bottomPad = SwitcherMetrics.nameGap + nameHeight + SwitcherMetrics.nameBottomInset
+            + SwitcherMetrics.panelVerticalPadding
         let iconPanelHeight = slot + bottomPad * 2
         let iconY = bottomPad
 
@@ -388,7 +448,11 @@ private extension AppSwitcherPanel {
         let contentHost: NSView
         let slots: [IconSlotView]
         let badgeOverlay: NSView
-        if let cachedContainer, let cachedSlots, let cachedOverlay, cachedSlots.count == apps.count {
+        // 容器（含材质层）的圆角在创建时定死，复用前先确认它没被调过
+        let containerRadius = SwitcherMetrics.cornerRadius
+        let radiusChanged = abs((cachedContainer?.layer?.cornerRadius ?? containerRadius) - containerRadius) > 0.5
+        if let cachedContainer, let cachedSlots, let cachedOverlay,
+           cachedSlots.count == apps.count, !radiusChanged {
             // 复用容器（含玻璃、槽位、角标高层）：只更新选中态，绝不重建材质层
             background = cachedContainer
             let cachedBackground = iconBackgroundsPerScreen.indices.contains(screenIndex)
@@ -396,9 +460,16 @@ private extension AppSwitcherPanel {
             themeBackground = cachedBackground
             // 内容宿主：首建时存入；异常缺失时退化为容器本身
             contentHost = cachedBackground?.contentHost ?? cachedContainer
-            slots = cachedSlots
             badgeOverlay = cachedOverlay
-            slots.enumerated().forEach { $1.setSelected($0 == appIndex) }
+            // 槽位内部几何（图标视图 frame、角标尺寸）在 init 时按当时的边长定死：
+            // 边长变了必须重建槽位，否则图标尺寸与位置停在旧几何（调「左右留白 / 图标尺寸」时表现为图标乱）；
+            // 只变位置（留白 / 间距）时重排即可
+            if let first = cachedSlots.first, abs(first.slotSide - slot) > 0.5 {
+                cachedSlots.forEach { $0.removeFromSuperview() }
+                slots = buildOrReuseSlots(nil, in: contentHost, slot: slot, iconY: iconY, hoverGate: hoverGate)
+            } else {
+                slots = buildOrReuseSlots(cachedSlots, in: contentHost, slot: slot, iconY: iconY, hoverGate: hoverGate)
+            }
             // 移除上一次的名称 label（其余子视图原地复用）
             if nameLabelsPerScreen.indices.contains(screenIndex) {
                 nameLabelsPerScreen[screenIndex]?.removeFromSuperview()
@@ -427,9 +498,10 @@ private extension AppSwitcherPanel {
         }
         placeBadges(on: badgeOverlay, slots: slots)
 
-        // 图标面板自身垂直居中于该屏且位置固定
+        // 图标面板自身垂直居中于**整屏**且位置固定：系统切换器的面板中心 = 屏幕中心
+        // （实拍：面板 y 472..609，中心 540.5 ≈ 屏高 1080 的中点 540；visibleFrame 中点会低 15pt）
         let iconPanelX = visibleFrame.midX - iconPanelWidth / 2
-        let iconPanelTop = visibleFrame.midY + iconPanelHeight / 2
+        let iconPanelTop = screen.frame.midY + iconPanelHeight / 2
         let highlightedCenter = iconPanelX + SwitcherMetrics.iconInset
             + CGFloat(appIndex) * (slot + SwitcherMetrics.iconGap) + slot / 2
         let frame = NSRect(x: iconPanelX, y: iconPanelTop - iconPanelHeight,
@@ -447,8 +519,14 @@ private extension AppSwitcherPanel {
         if let cached, cached.count == apps.count {
             for (index, slotView) in cached.enumerated() {
                 slotView.frame = slotFrame(index)
+                // 图标要跟着刷新：槽位跨会话复用，应用重启/换图标后图像对象会换，
+                // 不更新就一直是首次构建时那张（表现为「图标不更新」）
+                slotView.setIcon(apps[index].icon)
                 slotView.setSelected(index == appIndex)
-                background.addSubview(slotView)
+                // 只在宿主变化时挪动：重复 addSubview 会把槽位提到角标高层之上，角标反被图标盖住
+                if slotView.superview !== background {
+                    background.addSubview(slotView)
+                }
             }
             return cached
         }
@@ -538,10 +616,15 @@ private extension AppSwitcherPanel {
         // 随后重建并 resize；首次或上次该屏无列表时才新建
         let background: ScrollContainerView
         let themeBackground: Theme.Background
+        // 圆角在容器创建时定死：调过「列表圆角」就重建，否则复用后圆角停在旧值
+        let radiusChanged = abs((listContainersPerScreen.indices.contains(screenIndex)
+                                    ? listContainersPerScreen[screenIndex]?.layer?.cornerRadius : nil)
+            .map { $0 - SwitcherMetrics.listCornerRadius } ?? 0) > 0.5
         if let cached = (listContainersPerScreen.indices.contains(screenIndex)
                             ? listContainersPerScreen[screenIndex] : nil),
            listBackgroundsPerScreen.indices.contains(screenIndex),
-           let cachedBackground = listBackgroundsPerScreen[screenIndex] {
+           let cachedBackground = listBackgroundsPerScreen[screenIndex],
+           !radiusChanged {
             background = cached
             themeBackground = cachedBackground
             cachedBackground.contentHost.subviews.forEach { $0.removeFromSuperview() }
@@ -700,23 +783,23 @@ private final class IconSlotView: NSView {
     }
 
     func setSelected(_ selected: Bool) {
-        // 选中态：玻璃胶囊（填充 + 可选描边），配色随外观自适应
-        // （浅色=中灰+灰边、暗色=白+无描边，见 Theme.switcherHighlightColors）；
+        // 选中态：玻璃胶囊（纯填充、无描边），配色随外观自适应（见 Theme.switcherHighlightColor）；
         // 视图未入窗时（首建渲染阶段）回退到应用级外观
         if selected {
             let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
-            let colors = Theme.switcherHighlightColors(for: appearance)
-            highlightLayer.backgroundColor = colors.fill.cgColor
-            if let border = colors.border {
-                highlightLayer.borderColor = border.cgColor
-                highlightLayer.borderWidth = 1
-            } else {
-                highlightLayer.borderWidth = 0
-            }
+            highlightLayer.backgroundColor = Theme.switcherHighlightColor(for: appearance).cgColor
         } else {
             highlightLayer.backgroundColor = nil
-            highlightLayer.borderWidth = 0
         }
+    }
+
+    /// 当前槽位边长：图标视图尺寸、角标尺寸等内部几何都由它决定，复用槽位时用它判断几何是否变了
+    var slotSide: CGFloat { slotSize }
+
+    /// 更新图标：复用槽位时应用可能换了图标（重启、换主题图标），图像对象不同才赋值（避免无谓重绘）
+    func setIcon(_ image: NSImage?) {
+        guard iconView.image !== image else { return }
+        iconView.image = image
     }
 
     /// 生成定位好的角标（本视图坐标系）；text 为空或 frame 未就绪时返回 nil。

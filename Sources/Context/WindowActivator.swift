@@ -31,20 +31,22 @@ enum WindowActivator {
             + "preferred=\"\(preferred?.title ?? "nil")\"")
 
         guard let preferred else {
-            app.activate()
+            activate(app)
             return
         }
 
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, axTimeout)
-        app.activate()
+        activate(app)
 
         DispatchQueue.main.async {
             guard isCurrent(token) else { return }
+            if isOwn(app) { frontOwnWindow(preferred) }
             focus(preferred.axWindow, axApp: axApp)
             // 补拍：activate 异步生效等时序竞争的兜底
             DispatchQueue.main.asyncAfter(deadline: .now() + focusRetryDelay) {
                 guard isCurrent(token) else { return }
+                if isOwn(app) { frontOwnWindow(preferred) }
                 focus(preferred.axWindow, axApp: axApp)
                 verify(axApp: axApp)
             }
@@ -83,6 +85,20 @@ enum WindowActivator {
             guard isCurrent(token) else { return }
             DiagLog.log("z-before", WindowListService.diagnosticZOrder())
 
+            // 自己的窗口：AX 与 NSRunningApplication.activate() 都带不到前台，走 AppKit 直连
+            if isOwn(app) {
+                activate(app)
+                frontOwnWindow(item)
+                DiagLog.log("focus", "own-window, frontmost=\(frontPIDLabel())")
+                DispatchQueue.main.asyncAfter(deadline: .now() + focusRetryDelay) {
+                    guard isCurrent(token) else { return }
+                    activate(app)
+                    frontOwnWindow(item)
+                    verify(axApp: axApp)
+                }
+                return
+            }
+
             focus(item.axWindow, axApp: axApp)
             DiagLog.log("focus", "immediate, frontmost=\(frontPIDLabel())")
 
@@ -90,7 +106,7 @@ enum WindowActivator {
                 == app.processIdentifier
             DiagLog.log("probe", "alreadyActive=\(alreadyActive) frontmost=\(frontPIDLabel())")
             if !alreadyActive {
-                app.activate()
+                activate(app)
             }
             // 无论哪条激活路径，重新聚焦以纠正激活过程的窗口决策
             focus(item.axWindow, axApp: axApp)
@@ -101,6 +117,33 @@ enum WindowActivator {
                 verify(axApp: axApp)
             }
         }
+    }
+
+    /// 目标是不是自己这个进程
+    private static func isOwn(_ app: NSRunningApplication) -> Bool {
+        app.processIdentifier == ProcessInfo.processInfo.processIdentifier
+    }
+
+    /// 激活目标应用。**自己必须走 NSApp.activate**：实测 `NSRunningApplication.activate()`
+    /// 对自己无效（probe 一直显示 frontmost=别的 app，设置窗口要等几秒、被别的触发带上前台），
+    /// 这正是「cmd+tab 切到 AppWindow 带不到前台」的根因；与菜单栏「设置…」打开窗口同一条路
+    private static func activate(_ app: NSRunningApplication) {
+        if isOwn(app) {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            app.activate()
+        }
+    }
+
+    /// 自己 app 的窗口直接前置：AXRaise 只对已激活 app 的窗口产生前台效果，
+    /// 未激活时改的是 AX 焦点、屏幕上看不到。cgWindowID 与 NSWindow.windowNumber 同值
+    private static func frontOwnWindow(_ item: WindowItem) {
+        guard let id = item.cgWindowID,
+              let window = NSApp.window(withWindowNumber: Int(id)) else {
+            DiagLog.log("focus", "own window not found id=\(item.cgWindowID.map(String.init) ?? "nil")")
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private static func verify(axApp: AXUIElement) {

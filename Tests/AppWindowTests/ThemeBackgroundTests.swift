@@ -2,67 +2,64 @@ import XCTest
 import AppKit
 @testable import AppWindow
 
-/// 背景装配契约：玻璃分支的毛玻璃垫层可配置（按开关增减 NSVisualEffectView）
+/// 背景装配契约：毛玻璃层 + 可选加强模糊层 + 暗色叠层，以及面板外观偏好
 final class ThemeBackgroundTests: XCTestCase {
 
     override func tearDown() {
         // 测试写的是测试进程自己的 defaults 域；恢复默认避免用例互相干扰
-        Settings.glassUnderBlurStrength = 1
-        Settings.glassMode = .regular
+        UserDefaults.standard.removeObject(forKey: "panelTintAlpha")
+        UserDefaults.standard.removeObject(forKey: "panelAlpha")
         super.tearDown()
     }
 
-    @available(macOS 26.0, *)
-    func testUnderGlassBlurFollowsStrength() {
-        Settings.glassMode = .regular
+    /// 面板着色量：默认取校准值 12%、越界钳制
+    func testPanelTintAlphaSetting() {
+        UserDefaults.standard.removeObject(forKey: "panelTintAlpha")
+        XCTAssertEqual(Settings.panelTintAlpha, 0.12, accuracy: 0.0001, "未设置过时用校准默认值")
 
-        Settings.glassUnderBlurStrength = 0.5
-        let half = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 50))
-        _ = Theme.installBackground(on: half, cornerRadius: 10)
-        XCTAssertEqual(countBlurViews(in: half), 1, "强度 > 0 时应装配垫层")
-        XCTAssertEqual(blurView(in: half)?.alphaValue ?? 0, 0.5, accuracy: 0.001,
-                       "垫层不透明度应等于配置强度（观感即模糊度）")
-
-        Settings.glassUnderBlurStrength = 0
-        let off = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 50))
-        _ = Theme.installBackground(on: off, cornerRadius: 10)
-        XCTAssertEqual(countBlurViews(in: off), 0, "强度 0 = 关闭，不应有 NSVisualEffectView")
+        Settings.panelTintAlpha = 0.3
+        XCTAssertEqual(Settings.panelTintAlpha, 0.3, accuracy: 0.0001)
+        Settings.panelTintAlpha = 5
+        XCTAssertEqual(Settings.panelTintAlpha, 1, accuracy: 0.0001, "越界钳到 1")
     }
 
-    /// 旧开关迁移：false → 0%、true → 100%、都未设置过 → 默认 100%；新键优先于旧键
-    func testGlassBlurStrengthMigratesFromLegacySwitch() {
-        let defaults = UserDefaults.standard
-        defer {
-            defaults.removeObject(forKey: "glassUnderBlurStrength")
-            defaults.removeObject(forKey: "glassUnderBlurEnabled")
-        }
-        defaults.removeObject(forKey: "glassUnderBlurStrength")
-        defaults.removeObject(forKey: "glassUnderBlurEnabled")
-        XCTAssertEqual(Settings.glassUnderBlurStrength, 1, "未设置过时应为默认 100%")
+    /// 面板不透明度：默认 1（最不透明）、越界钳制
+    func testPanelAlphaSetting() {
+        UserDefaults.standard.removeObject(forKey: "panelAlpha")
+        XCTAssertEqual(Settings.panelAlpha, 1, accuracy: 0.0001, "未设置过时默认完全不透明")
 
-        defaults.set(false, forKey: "glassUnderBlurEnabled")
-        XCTAssertEqual(Settings.glassUnderBlurStrength, 0, "旧开关关闭 → 0%")
-
-        defaults.set(true, forKey: "glassUnderBlurEnabled")
-        XCTAssertEqual(Settings.glassUnderBlurStrength, 1, "旧开关开启 → 100%")
-
-        defaults.set(0.4, forKey: "glassUnderBlurStrength")
-        XCTAssertEqual(Settings.glassUnderBlurStrength, 0.4, accuracy: 0.0001, "新键优先于旧键")
+        Settings.panelAlpha = 0.4
+        XCTAssertEqual(Settings.panelAlpha, 0.4, accuracy: 0.0001)
+        Settings.panelAlpha = -3
+        XCTAssertEqual(Settings.panelAlpha, 0, accuracy: 0.0001, "越界钳到 0")
     }
 
-    /// 高亮配色随外观切换：浅色 = 中灰/黑（现状），暗色 = 白（灰色在暗托盘上对比不足）。
-    /// 暗色白值经实测反馈调过两轮：35%/60% 太扎眼 → 28%，随后描边比填充更亮读成白圈 → 去掉描边
+    /// 面板外观偏好变化要推进背景代次：面板容器跨会话复用，靠它判断材质层要不要重建
+    func testPanelSettingsBumpBackgroundGeneration() {
+        var previous = Theme.backgroundGeneration
+
+        Settings.panelTintAlpha = 0.2
+        XCTAssertGreaterThan(Theme.backgroundGeneration, previous, "着色量变化应作废复用缓存")
+
+        previous = Theme.backgroundGeneration
+        Settings.panelAlpha = 0.6
+        XCTAssertGreaterThan(Theme.backgroundGeneration, previous, "不透明度变化应作废复用缓存")
+    }
+
+    /// 高亮配色随外观切换：浅色 = 中灰、暗色 = 白（灰色在暗托盘上对比不足）。
+    /// 两色均经实测反馈调过：暗色白值 35%/60% 太扎眼 → 28%；描边两种模式下都读成
+    /// 异色圈（浅色黑边、暗色白圈）→ 全部去掉，高亮只剩填充
     func testHighlightsAdaptToAppearance() throws {
         let light = try XCTUnwrap(NSAppearance(named: .aqua))
         let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
 
-        let lightPill = Theme.switcherHighlightColors(for: light)
-        let darkPill = Theme.switcherHighlightColors(for: dark)
-        XCTAssertEqual(lightPill.fill.cgColor, NSColor.gray.withAlphaComponent(0.42).cgColor)
-        XCTAssertEqual(lightPill.border?.cgColor, NSColor.gray.withAlphaComponent(0.55).cgColor)
-        XCTAssertEqual(darkPill.fill.cgColor, NSColor.white.withAlphaComponent(0.28).cgColor)
-        XCTAssertNil(darkPill.border, "暗色描边会读成白圈，应去掉")
-        XCTAssertNotEqual(lightPill.fill.cgColor, darkPill.fill.cgColor, "暗色模式应换成对比更高的颜色")
+        XCTAssertEqual(Theme.switcherHighlightColor(for: light).cgColor,
+                       NSColor.gray.withAlphaComponent(0.42).cgColor)
+        XCTAssertEqual(Theme.switcherHighlightColor(for: dark).cgColor,
+                       NSColor.white.withAlphaComponent(0.28).cgColor)
+        XCTAssertNotEqual(Theme.switcherHighlightColor(for: light).cgColor,
+                          Theme.switcherHighlightColor(for: dark).cgColor,
+                          "暗色模式应换成对比更高的颜色")
 
         XCTAssertEqual(Theme.windowRowHighlightColor(for: light).cgColor,
                        NSColor.black.withAlphaComponent(0.20).cgColor)
@@ -70,12 +67,46 @@ final class ThemeBackgroundTests: XCTestCase {
                        NSColor.white.withAlphaComponent(0.18).cgColor)
     }
 
+    /// 加强模糊的层数换算：0 = 不加层；越大层数越多（封顶 6 层）
+    func testBackdropBlurLayerCount() {
+        XCTAssertEqual(BackdropBlur.extraLayerCount(forRadius: 0), 0, "0 = 只用基础毛玻璃")
+        XCTAssertEqual(BackdropBlur.extraLayerCount(forRadius: 1), 1, "有值就至少叠一层")
+        XCTAssertEqual(BackdropBlur.extraLayerCount(forRadius: 16), 2)
+        XCTAssertEqual(BackdropBlur.extraLayerCount(forRadius: 64), 5)
+        XCTAssertEqual(BackdropBlur.extraLayerCount(forRadius: 200), 6, "封顶 6 层")
+
+        let views = BackdropBlur.makeExtraViews(radius: 32, cornerRadius: 12)
+        XCTAssertEqual(views.count, 3)
+        XCTAssertTrue(views.allSatisfy { $0.blendingMode == .withinWindow },
+                      "加强层必须 withinWindow：只糊窗口内上一层的结果，逐层叠加")
+        XCTAssertTrue(views.allSatisfy { $0.material == .underWindowBackground },
+                      "加强层要用最轻的材质：叠 .menu 这类重填充材质会把面板压成不透明")
+    }
+
+    /// 装配契约：强度 > 0 时多出加强层，且叠在基础毛玻璃之上；不透明度同时作用到两者
+    func testInstallBackgroundAddsExtraBlurLayers() throws {
+        Tuning.backdropBlurRadius.store(32)
+        Settings.panelAlpha = 0.5
+        defer {
+            Tuning.backdropBlurRadius.reset()
+            Settings.panelAlpha = 1
+        }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 50))
+        let background = Theme.installBackground(on: container, cornerRadius: 10)
+        let blurViews = container.subviews.compactMap { $0 as? NSVisualEffectView }
+        XCTAssertEqual(blurViews.count, 1 + 3, "基础毛玻璃 1 层 + 加强 3 层")
+        XCTAssertEqual(blurViews.first?.blendingMode, .behindWindow, "最底层负责采样窗口背后")
+        XCTAssertTrue(blurViews.allSatisfy { abs($0.alphaValue - 0.5) < 0.001 },
+                      "加强层要跟着一起透，否则会把半透明的基础层盖住")
+        XCTAssertEqual(background.materials.count, blurViews.count + 1, "材质清单应含全部模糊层 + 叠层")
+    }
+
     // MARK: - 内容层与背景层分离（回归）
 
     /// 回归：面板复用容器时「清空 contentHost.subviews 重建内容」不得移除任何背景层。
-    /// 旧结构下 contentHost 就是容器本身（非玻璃分支），清空会把毛玻璃与暗色叠层一并删掉
+    /// 旧结构下 contentHost 就是容器本身，清空会把毛玻璃与暗色叠层一并删掉
     func testClearingContentHostKeepsBackgroundLayers() {
-        Settings.glassMode = .off
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 50))
         let background = Theme.installBackground(on: container, cornerRadius: 10)
         XCTAssertFalse(background.contentHost === container, "内容宿主必须是独立层")
@@ -90,52 +121,7 @@ final class ThemeBackgroundTests: XCTestCase {
         XCTAssertNotNil(background.contentHost.superview, "内容宿主不应脱离视图树")
     }
 
-    /// 回归（Clear 玻璃下切换应用后下拉列表可读性变差的根因）：旧结构 contentHost 直接是
-    /// glass.contentView，清空内容会连自适应垫层一起删掉。新结构下垫层是内容宿主的祖先
-    @available(macOS 26.0, *)
-    func testClearingContentHostKeepsGlassScrim() {
-        Settings.glassMode = .clear
-        Settings.glassUnderBlurStrength = 0
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 50))
-        let background = Theme.installBackground(on: container, cornerRadius: 10)
-
-        guard let glass = background.materials.compactMap({ $0 as? NSGlassEffectView }).first,
-              let glassContent = glass.contentView else {
-            return XCTFail("Clear 模式应装配带 contentView 的 NSGlassEffectView")
-        }
-        XCTAssertFalse(background.contentHost === glassContent,
-                       "内容宿主不能直接是玻璃 contentView（否则清内容会删掉垫层）")
-        XCTAssertTrue(isDescendant(background.contentHost, of: glass), "内容宿主必须在玻璃内合成")
-        XCTAssertTrue(containsBackgroundFill(glassContent), "玻璃 contentView 内应有垫层")
-
-        background.contentHost.addSubview(NSView(frame: container.bounds))
-        background.contentHost.subviews.forEach { $0.removeFromSuperview() }
-
-        XCTAssertTrue(containsBackgroundFill(glassContent), "清空内容后垫层仍应存在")
-        XCTAssertTrue(isDescendant(background.contentHost, of: glass), "清空内容后内容宿主仍在玻璃内")
-    }
-
     private func countBlurViews(in container: NSView) -> Int {
         container.subviews.filter { $0 is NSVisualEffectView }.count
-    }
-
-    private func blurView(in container: NSView) -> NSVisualEffectView? {
-        container.subviews.compactMap { $0 as? NSVisualEffectView }.first
-    }
-
-    /// view 的祖先链中是否存在 ancestor
-    private func isDescendant(_ view: NSView, of ancestor: NSView) -> Bool {
-        var node = view.superview
-        while let current = node {
-            if current === ancestor { return true }
-            node = current.superview
-        }
-        return false
-    }
-
-    /// 视图树中是否存在带背景填充的层（垫层 / 暗色叠层）
-    private func containsBackgroundFill(_ view: NSView) -> Bool {
-        if view.wantsLayer, view.layer?.backgroundColor != nil { return true }
-        return view.subviews.contains { containsBackgroundFill($0) }
     }
 }

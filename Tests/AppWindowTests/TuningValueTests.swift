@@ -86,28 +86,31 @@ final class TuningValueTests: XCTestCase {
     }
 
     /// 默认值锚点：锁死当前设计基线，防无意改动。
-    /// 改造时全部等于旧硬编码常量，之后按实测反馈有意调整过两处（见下行注释）
+    /// 改造时全部等于旧硬编码常量，之后按实测反馈有意调整过（见各行注释）；
+    /// 2026-10 的一批来自系统 cmd+tab 实拍校准（像素测量：节距 95pt、底板 90pt、侧边留白 36pt 等）
     func testCatalogDefaultsMatchLegacyConstants() {
         let expected: [String: CGFloat] = [
-            "tuning.iconSizeMax": 154,
+            "tuning.iconSizeMax": 90,         // 系统校准：154 → 90（图标槽位；+间距 5 = 节距 95）
             "tuning.rowHeight": 34,
             "tuning.maxListRows": 8,
             "tuning.panelWidth": 520,
             "tuning.listFontSize": 13,
-            "tuning.iconGap": 12,
+            "tuning.iconGap": 5,              // 系统校准：12 → 5
             "tuning.cornerRadius": 40,        // 有意调整：26 → 40（对齐系统观感）
             "tuning.listCornerRadius": 16,
             "tuning.iconSizeMin": 0,
-            "tuning.iconInset": 36,           // 有意调整：24 → 36（图标行左右留白加大）
-            "tuning.panelSideMargin": 48,
+            "tuning.iconInset": 28,           // 有意调整：24 → 36 → 44 → 50 → 28（先加大，再按观感收到 28）
+            "tuning.panelSideMargin": 87,     // 有意调整：系统校准 48 → 36，再按观感放到 87
+            "tuning.backdropBlurRadius": 0,   // 新增：面板背后真高斯模糊半径，0 = 关闭
+            "tuning.panelVerticalPadding": 4, // 新增：图标托盘上下留白（比原观感高 8pt）
             "tuning.panelGap": 6,
             "tuning.edgeInset": 8,
             "tuning.listWidthMin": 180,
             "tuning.listWidthMax": 360,
             "tuning.listWidthPadding": 54,
-            "tuning.nameFontSize": 12,
+            "tuning.nameFontSize": 13,        // 系统校准：12 → 13（实测名称字高 ≈ 13pt）
             "tuning.nameGap": 1,
-            "tuning.nameBottomInset": 5,
+            "tuning.nameBottomInset": 6,      // 系统校准：5 → 6（面板下缘留白对齐系统 ≈ 20pt）
             "tuning.heightRatio": 0.70
         ]
         XCTAssertEqual(Tuning.all.count, expected.count)
@@ -120,8 +123,8 @@ final class TuningValueTests: XCTestCase {
     }
 
     func testCatalogGroupCounts() {
-        XCTAssertEqual(Tuning.common.count, 8)
-        XCTAssertEqual(Tuning.advanced.count, 12)
+        XCTAssertEqual(Tuning.common.count, 9)
+        XCTAssertEqual(Tuning.advanced.count, 13)
     }
 
     func testFormattedValue() {

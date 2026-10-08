@@ -3,110 +3,70 @@ import AppKit
 /// 全局面板外观设置
 enum Theme {
 
-    /// 不使用玻璃效果时，毛玻璃材质层的不透明度（1.0 = 材质完全生效、最不透明）
-    static let backgroundAlpha: CGFloat = 1.0
-    /// 不使用玻璃效果时，毛玻璃之上再叠一层随系统深浅的半透明底色：
-    /// 降低透明度与亮度，让后面窗口透上来的清晰内容更少（越大越暗越「糊」）
-    static let nonGlassTintAlpha: CGFloat = 0.12
-    /// 液态玻璃的黑色 tint 透明度（实拍对比系统切换器校准）：Regular 轻、Clear 重
-    private static let glassTintAlphaRegular: CGFloat = 0.10
-    private static let glassTintAlphaClear: CGFloat = 0.18
-    /// 玻璃之下的自适应不透明度垫层：把面板观感钉住、遮蔽底层内容（系统切换器观感的核心）
-    private static let glassScrimAlpha: CGFloat = 0.5
+    /// 背景装配代次：外观偏好（不透明度 / 着色量 / 模糊加强）变化时 +1。
+    /// 面板容器与材质层跨会话复用，靠它判断复用缓存是否作废（否则改设置不生效，要重启应用）
+    private(set) static var backgroundGeneration = 0
+
+    static func invalidateBackgrounds() {
+        backgroundGeneration += 1
+    }
 
     /// 背景装配结果：
-    /// - `contentHost`：内容应添加到的视图。**独立成层**、嵌在背景装配内部（玻璃分支 = 垫层内、
-    ///   毛玻璃分支 = 暗色叠层内），保证「清空 contentHost.subviews 重建内容」不会误删背景层
-    ///   ——面板复用容器时正是这样清内容的，旧结构（内容与背景同层）曾导致 Clear 玻璃下
-    ///   切换应用后下拉列表丢失垫层、可读性变差
+    /// - `contentHost`：内容应添加到的视图。**独立成层**、嵌在背景装配内部（暗色叠层内），
+    ///   保证「清空 contentHost.subviews 重建内容」不会误删背景层
+    ///   ——面板复用容器时正是这样清内容的
     /// - `materials`：本次装配添加的顶层视图（内容宿主嵌在其内），重建背景时整体移除即可完全卸载
     struct Background {
         let contentHost: NSView
         let materials: [NSView]
     }
 
-    /// 给面板容器装配背景材质，返回内容宿主与材质视图：
-    /// - macOS 26+ 且未关闭玻璃：NSGlassEffectView（Regular/Clear），内容装入 contentView
-    /// - 否则（关闭玻璃 / macOS 14/15）：毛玻璃模糊层 + 半透明底色层（更实、更糊）
-    /// 容器由本函数设圆角与裁剪，材质层随容器尺寸自适应
+    /// 给面板容器装配背景材质：毛玻璃模糊层（+ 可选加强层）+ 半透明暗色叠层。
+    /// 容器由本函数设圆角与裁剪，材质层随容器尺寸自适应。
+    /// （曾有过 NSGlassEffectView 分支：与背后模糊层互相抢采样、半径也不可控，已整体移除）
     @discardableResult
-    static func installBackground(on container: NSView, cornerRadius: CGFloat) -> Background {
+    static func installBackground(on container: NSView, cornerRadius: CGFloat,
+                                  includeBackdropBlur: Bool = true) -> Background {
         container.wantsLayer = true
         container.layer?.cornerRadius = cornerRadius
         container.layer?.masksToBounds = true
 
-        let glassMode = Settings.glassMode
-        guard #available(macOS 26.0, *), glassMode != .off else {
-            // 毛玻璃模糊层打底
-            let blur = blurView(fitting: container, cornerRadius: cornerRadius, alpha: backgroundAlpha)
-            container.addSubview(blur)
-            // 半透明暗色叠在模糊之上、内容之下：降低亮度（原亮色叠层反而提亮，与系统观感不符）
-            let tint = NSView(frame: container.bounds)
-            tint.autoresizingMask = [.width, .height]
-            tint.wantsLayer = true
-            tint.layer?.cornerRadius = cornerRadius
-            tint.layer?.backgroundColor = NSColor.black
-                .withAlphaComponent(nonGlassTintAlpha).cgColor
-            container.addSubview(tint)
-            // 内容宿主嵌在暗色叠层内：清空内容不波及背景层，卸载材质时随叠层一并移除
-            return Background(contentHost: makeContentHost(fitting: tint), materials: [blur, tint])
-        }
-
-        // Liquid Glass 的聚焦/失焦样式由系统按窗口 key 状态渲染，无公开接口可干预；
-        // 观感异常时在设置里切 Clear 或整体关闭（回到上面的纯毛玻璃分支）
-        // 可配置强度的毛玻璃垫层：玻璃之下再叠一层 NSVisualEffectView，增强模糊、遮蔽底层内容
-        // （争取「扭曲 + 强模糊」两者兼得，更接近系统切换器）。强度 = 垫层不透明度：
-        // 半透明模糊与清晰底层混合，观感即模糊度可调；0 则不装配（更通透）
         var materials: [NSView] = []
-        let underBlurStrength = Settings.glassUnderBlurStrength
-        if underBlurStrength > 0 {
-            let underBlur = blurView(fitting: container, cornerRadius: cornerRadius,
-                                     alpha: CGFloat(underBlurStrength))
-            container.addSubview(underBlur)
-            materials.append(underBlur)
+        // 背景整体不透明度（设置 → 通用 → 面板不透明度）：调低则背后内容透上来更多、模糊变淡
+        let backgroundAlpha = CGFloat(Settings.panelAlpha)
+        // 毛玻璃模糊层打底（behindWindow：采样窗口背后）
+        let blur = blurView(fitting: container, cornerRadius: cornerRadius, alpha: backgroundAlpha)
+        container.addSubview(blur)
+        materials.append(blur)
+
+        // 加强模糊：每层 withinWindow 把上一层的结果再糊一遍（半径 0 = 不加层）。
+        // 设置窗口自身不装（普通窗口，糊了影响读设置）
+        if includeBackdropBlur {
+            let extraViews = BackdropBlur.makeExtraViews(
+                radius: Tuning.backdropBlurRadius.value, cornerRadius: cornerRadius
+            )
+            for view in extraViews {
+                view.frame = container.bounds
+                view.autoresizingMask = [.width, .height]
+                // 加强层跟着一起透：否则不透明的加强层会把半透明的基础层盖住
+                view.alphaValue = backgroundAlpha
+                container.addSubview(view)
+                materials.append(view)
+            }
         }
 
-        let glass = NSGlassEffectView(frame: container.bounds)
-        glass.autoresizingMask = [.width, .height]
-        glass.style = glassMode == .clear ? .clear : .regular
-        glass.cornerRadius = cornerRadius
-        // 亮度对齐系统切换器（实拍对比校准）：玻璃本身偏亮，按档位加轻度黑色 tint
-        switch glassMode {
-        case .regular:
-            glass.tintColor = NSColor.black.withAlphaComponent(glassTintAlphaRegular)
-        case .clear:
-            glass.tintColor = NSColor.black.withAlphaComponent(glassTintAlphaClear)
-        case .off:
-            glass.tintColor = nil
-        }
-        // effectIsInteractive 是 macOS 27 SDK 新增 API：CI 用 macOS 26 SDK 构建，
-        // 直接引用会编译失败。改为运行时按 setter selector 探测、KVC 写入——
-        // 任何 SDK 都能编译，26 运行时探测不到即跳过（交互反馈是 27+ 的增强）
-        if glass.responds(to: Selector(("setEffectIsInteractive:"))) {
-            glass.setValue(true, forKey: "effectIsInteractive")
-        }
-        // 内容宿主：放进 glass.contentView 才保证被嵌入玻璃内正确合成
-        let host = NSView(frame: glass.bounds)
-        host.autoresizingMask = [.width, .height]
-        glass.contentView = host
-
-        // 不透明度垫层：玻璃很透明，底层为深色页面时面板会整体变暗、深色文字不可辨；
-        // 垫一层自适应底色（浅色模式浅灰、深色模式深灰）把面板观感钉住、并遮蔽底层文字，
-        // 对齐系统切换器「材料稳定、不随底层反转」的特性
-        let scrim = NSView(frame: host.bounds)
-        scrim.autoresizingMask = [.width, .height]
-        scrim.wantsLayer = true
-        scrim.layer?.backgroundColor = NSColor.windowBackgroundColor
-            .withAlphaComponent(glassScrimAlpha).cgColor
-        host.addSubview(scrim)
-
-        // 内容宿主嵌在垫层内（与毛玻璃分支同构）：清空内容不波及垫层；
-        // 仍在 glass.contentView 内，保证内容被放进玻璃内合成（头文件语义）
-        let contentHost = makeContentHost(fitting: scrim)
-
-        container.addSubview(glass)
-        materials.append(glass)
-        return Background(contentHost: contentHost, materials: materials)
+        // 半透明暗色叠在模糊之上、内容之下：降低亮度（原亮色叠层反而提亮，与系统观感不符）。
+        // 着色量提成偏好（设置 → 通用 → 面板着色量）
+        let tint = NSView(frame: container.bounds)
+        tint.autoresizingMask = [.width, .height]
+        tint.wantsLayer = true
+        tint.layer?.cornerRadius = cornerRadius
+        tint.layer?.backgroundColor = NSColor.black
+            .withAlphaComponent(CGFloat(Settings.panelTintAlpha)).cgColor
+        container.addSubview(tint)
+        materials.append(tint)
+        // 内容宿主嵌在暗色叠层内：清空内容不波及背景层，卸载材质时随叠层一并移除
+        return Background(contentHost: makeContentHost(fitting: tint), materials: materials)
     }
 
     /// 内容宿主层：铺满 parent 的透明子视图，叠在 parent 的背景填充之上。
@@ -120,14 +80,15 @@ enum Theme {
     }
 
     /// 切换器「选中图标」高亮配色，按外观取分支：
-    /// - 浅色模式：50% 中灰填充 + 灰描边（浅托盘上偏深、清晰可见）
-    /// - 暗色模式：白色填充、**无描边**（描边比填充更亮、会读成白圈——实测反馈去掉）
+    /// - 浅色模式：中灰 42% 填充（浅托盘上偏深、清晰可见）
+    /// - 暗色模式：白 28% 填充
+    /// 两种模式都不描边：描边在浅色下读成黑边、暗色下比填充更亮读成白圈（均实测反馈去掉）
     /// 返回具体色（非动态色）：图层颜色不随外观自动重解析，调用方按当前外观取一次即可，
     /// 面板每次显示都会重渲染
-    static func switcherHighlightColors(for appearance: NSAppearance) -> (fill: NSColor, border: NSColor?) {
+    static func switcherHighlightColor(for appearance: NSAppearance) -> NSColor {
         isDark(appearance)
-            ? (NSColor.white.withAlphaComponent(0.28), nil)
-            : (NSColor.gray.withAlphaComponent(0.42), NSColor.gray.withAlphaComponent(0.55))
+            ? NSColor.white.withAlphaComponent(0.28)
+            : NSColor.gray.withAlphaComponent(0.42)
     }
 
     /// 窗口列表「选中行」高亮配色，按外观取分支：

@@ -15,25 +15,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // 开关引用：refreshFromSources 时回写当前值（偏好可能被其他入口改动）
     private lazy var delayedPanelSwitch = makeSwitch(isOn: Settings.delayedPanel) { Settings.delayedPanel = $0 }
-    private lazy var glassModeControl: NSSegmentedControl = {
-        let control = NSSegmentedControl(
-            labels: ["Regular", "Clear", "关闭"],
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(glassModeChanged(_:))
-        )
-        control.controlSize = .small
-        control.selectedSegment = Self.segmentIndex(for: Settings.glassMode)
-        return control
-    }()
-    private lazy var glassBlurControl: GlassBlurControl = {
-        let control = GlassBlurControl()
-        control.onChange = { [weak self] in
-            // 设置窗口自身背景立即重建；两个切换面板在下次显示时生效
-            self?.rebuildBackground()
-        }
-        return control
-    }()
+    private lazy var panelTintControl = makePanelSlider(
+        read: { Settings.panelTintAlpha },
+        write: { Settings.panelTintAlpha = $0 }
+    )
+    private lazy var panelAlphaControl = makePanelSlider(
+        read: { Settings.panelAlpha },
+        write: { Settings.panelAlpha = $0 }
+    )
+
     private lazy var diagLogSwitch = makeSwitch(isOn: DiagLog.isEnabled) { DiagLog.isEnabled = $0 }
     private lazy var autoUpdateSwitch = makeSwitch(isOn: updaterManager.automaticallyChecksForUpdates) { [weak self] isOn in
         self?.updaterManager.automaticallyChecksForUpdates = isOn
@@ -43,6 +33,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         self?.updaterManager.betaChannelDidChange()
     }
     private var switchHandlers: [ObjectIdentifier: (Bool) -> Void] = [:]
+    // 快捷键「删除」按钮的处理表：两个按钮共用同一个 action，按键对象分派
+    private var shortcutDeleteHandlers: [ObjectIdentifier: () -> Void] = [:]
 
     // 快捷键
     private var appSwitcherRecorder: ShortcutRecorderView?
@@ -73,9 +65,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // 面板几何参数
     private var tuningControls: [TuningControl] = []
-    private var previewViews: [PanelPreviewView] = []
-    private var advancedSection: NSView?
-    private var advancedToggle: NSButton?
+
+
+
 
     init(
         updaterManager: UpdaterManager,
@@ -131,7 +123,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         cancelAllRecordings()
-        eventTapManager.endPreview()
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -140,9 +131,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        // 窗口存续期间外部状态可能已变（刚授权辅助功能、在系统设置里批准了登录项），回来时同步；
-        // 点击设置窗口也意味着预览该收了
-        eventTapManager.endPreview()
+        // 窗口存续期间外部状态可能已变（刚授权辅助功能、在系统设置里批准了登录项），回来时同步
         refreshFromSources()
         updateWindowSize()
     }
@@ -156,13 +145,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // 背景必须先装（installBackground 内部是 addSubview），内容后加才盖在材质之上；
         // 容器需带非零初始尺寸——材质层按当前 bounds 取 frame，之后靠 autoresizing 跟随窗口。
         // 设置窗口是普通窗口、内容自持约束，取 .materials 即可（内容不装入 contentHost）
-        materialViews = Theme.installBackground(on: content, cornerRadius: 12).materials
+        materialViews = Theme.installBackground(on: content, cornerRadius: 12,
+                                                includeBackdropBlur: false).materials
         window.contentView = content
         contentContainer = content
 
         // 顶部 Tab 切换：固定不随内容滚动（内容超过小屏时下面滚动）
         let tabControl = NSSegmentedControl(
-            labels: ["通用", "更新", "快捷键", "面板与图标"],
+            labels: ["通用", "面板", "快捷键", "更新"],
             trackingMode: .selectOne,
             target: self,
             action: #selector(switchTab(_:))
@@ -196,26 +186,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
         ])
 
-        // Tab 归属：通用（行为开关 + 开机自启动）/ 更新 / 快捷键 / 面板与图标（几何 + 高级折叠）
-        let generalSection = makeSection(title: "通用", rows: [
-            SettingsControlRow(title: "延迟显示面板（100ms）", subtitle: "快速点按不闪面板，按住超过 100ms 才出现", control: delayedPanelSwitch),
-            SettingsControlRow(title: "玻璃效果", subtitle: "面板背景材质；观感异常时切 Clear 或关闭", control: glassModeControl),
-            SettingsControlRow(title: "毛玻璃垫层强度", subtitle: "玻璃之下的额外模糊层；0% = 关闭（更通透），越高模糊越强", control: glassBlurControl),
+        // 分组：通用（行为 / 外观 / 启动与诊断）、面板（面板几何 + 高级几何）、快捷键、更新
+        let behaviorSection = makeSection(title: "行为", rows: [
+            SettingsControlRow(title: "延迟显示面板（100ms）", subtitle: "快速点按不闪面板，按住超过 100ms 才出现", control: delayedPanelSwitch)
+        ])
+        let appearanceSection = makeSection(title: "外观", rows: [
+            SettingsControlRow(title: "面板不透明度", subtitle: "背景材质的不透明度：越低越透（背后内容透上来更多、模糊变淡）", control: panelAlphaControl),
+            SettingsControlRow(title: "面板着色量", subtitle: "叠在毛玻璃（含加强模糊）之上的黑色 tint：越高越暗，0% = 不着色", control: panelTintControl)
+        ])
+        let startupSection = makeSection(title: "启动与诊断", rows: makeLoginItemRows() + [
             SettingsControlRow(title: "诊断日志", subtitle: "排查问题时开启，写入 ~/Library/Logs/AppWindow.log", control: diagLogSwitch)
-        ] + makeLoginItemRows())
+        ])
+        let panelSection = makeSection(title: "面板几何", rows: makeGeometryRows())
+        let advancedGeometrySection = makeSection(title: "高级几何", rows: makeAdvancedRows())
+        let shortcutSection = makeSection(title: "快捷键", rows: shortcutRows())
         let updateSection = makeSection(title: "更新", rows: [
             SettingsControlRow(title: "自动检查更新", subtitle: "每天后台检查一次，发现新版本后提示安装", control: autoUpdateSwitch),
             SettingsControlRow(title: "参与测试版", subtitle: "接收预发布版本，可能不稳定", control: betaChannelSwitch)
         ])
-        let shortcutSection = makeSection(title: "快捷键", rows: shortcutRows())
-        let previewSection = makePreviewSection()
-        let geometrySection = makeGeometrySection()
-        let advancedGeometrySection = makeAdvancedSection()
 
-        let sections = [generalSection, updateSection, shortcutSection, previewSection, geometrySection, advancedGeometrySection]
+        let sections = [behaviorSection, appearanceSection, startupSection,
+                        panelSection, advancedGeometrySection, shortcutSection, updateSection]
+        // 面板与高级几何同页（分两组呈现）：常用参数在上、高级参数在下
         tabSections = [
-            [generalSection], [updateSection], [shortcutSection],
-            [previewSection, geometrySection, advancedGeometrySection]
+            [behaviorSection, appearanceSection, startupSection],
+            [panelSection, advancedGeometrySection],
+            [shortcutSection],
+            [updateSection]
         ]
 
         let stack = NSStackView(views: sections)
@@ -273,18 +270,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scrollToTop()
     }
 
-    /// 按当前 Tab 与「高级折叠」状态统一计算每个分组的显隐
+    /// 按当前 Tab 统一计算每个分组的显隐
     private func updateSectionVisibility() {
         let selected = tabSegmentedControl?.selectedSegment ?? 0
-        let advancedOn = advancedToggle?.state == .on
         for (index, group) in tabSections.enumerated() {
             for section in group {
-                if section === advancedSection {
-                    // 高级分组：既要属于当前 Tab，又要折叠开关打开
-                    section.isHidden = !(index == selected && advancedOn)
-                } else {
-                    section.isHidden = index != selected
-                }
+                section.isHidden = index != selected
             }
         }
     }
@@ -329,110 +320,70 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         shortcutHintLabel = hint
 
         return [
-            SettingsControlRow(title: "应用切换器", subtitle: "按住修饰键选择，松开完成切换", control: appRecorder),
-            SettingsControlRow(title: "窗口切换器", subtitle: "每按一次立即切换下一个窗口", control: windowRecorder),
+            makeShortcutRow(title: "应用切换器", subtitle: "按住修饰键选择，松开完成切换；「删除」= 不使用该快捷键",
+                            recorder: appRecorder, target: .appSwitcher),
+            makeShortcutRow(title: "窗口切换器", subtitle: "每按一次立即切换下一个窗口；「删除」= 不使用该快捷键",
+                            recorder: windowRecorder, target: .windowSwitcher),
             SettingsControlRow(title: "恢复默认快捷键", control: resetButton),
             hint
         ]
     }
 
+    /// 快捷键行：录制控件 + 「删除」（置为停用态）。停用后事件照常透传给系统，
+    /// 即系统自带的切换器会接管；重新录制或「恢复默认」即可解除
+    private func makeShortcutRow(title: String, subtitle: String,
+                                 recorder: ShortcutRecorderView,
+                                 target: ShortcutStore.Target) -> SettingsControlRow {
+        let deleteButton = NSButton(title: "删除", target: self, action: #selector(deleteShortcut(_:)))
+        deleteButton.controlSize = .small
+        shortcutDeleteHandlers[ObjectIdentifier(deleteButton)] = { [weak self] in
+            self?.disableShortcut(target)
+        }
+        let stack = NSStackView(views: [recorder, deleteButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        return SettingsControlRow(title: title, subtitle: subtitle, control: stack)
+    }
+
+    @objc private func deleteShortcut(_ sender: NSButton) {
+        shortcutDeleteHandlers[ObjectIdentifier(sender)]?()
+    }
+
+    private func disableShortcut(_ target: ShortcutStore.Target) {
+        cancelAllRecordings()
+        ShortcutStore.set(.disabled, for: target)
+        refreshShortcutRows()
+    }
+
     // MARK: - 面板几何
 
-    /// 内嵌实时预览：Cmd+Tab 与 Cmd+` 的缩小版外观，随几何参数即时重建
-    private func makePreviewSection() -> NSView {
-        let appPreview = PanelPreviewView(mode: .appSwitcher)
-        let windowPreview = PanelPreviewView(mode: .windowSwitcher)
-        previewViews = [appPreview, windowPreview]
-
-        let column = NSStackView(views: [
-            makePreviewCaption("Cmd+Tab 应用切换器"),
-            appPreview,
-            makePreviewCaption("Cmd+` 窗口面板"),
-            windowPreview
-        ])
-        column.orientation = .vertical
-        column.alignment = .width
-        column.spacing = 6
-
-        return makeSection(title: "预览（随参数实时更新）", rows: [column])
-    }
-
-    private func makePreviewCaption(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        // 显式左对齐：标签在 .width 对齐的栈里会被拉伸，避免跟随默认 alignment 靠右
-        label.alignment = .left
-        return label
-    }
-
-    /// 几何参数变化：重建内嵌预览 + 刷新屏幕上的全尺寸预览（后者未开启时为空操作）
-    private func refreshPreviews() {
-        previewViews.forEach { $0.rebuild() }
-        updateWindowSize()
-        eventTapManager.refreshLivePreview()
-    }
-
-    private func makeGeometrySection() -> NSView {
+    private func makeGeometryRows() -> [NSView] {
         var rows: [NSView] = Tuning.common.map { makeTuningRow($0) }
-
-        let previewAppButton = NSButton(title: "应用切换器", target: self, action: #selector(previewAppSwitcher))
-        previewAppButton.controlSize = .small
-        let previewWindowButton = NSButton(title: "窗口列表", target: self, action: #selector(previewWindowSwitcher))
-        previewWindowButton.controlSize = .small
-        let previewButtons = NSStackView(views: [previewAppButton, previewWindowButton])
-        previewButtons.orientation = .horizontal
-        previewButtons.spacing = 6
-        rows.append(SettingsControlRow(
-            title: "全尺寸预览",
-            subtitle: "在屏幕上弹出真实面板（随参数实时更新）；Esc / 点击面板 / 点击其他应用结束",
-            control: previewButtons
-        ))
-
         let resetButton = NSButton(title: "恢复默认", target: self, action: #selector(resetTuning))
         resetButton.controlSize = .small
         rows.append(SettingsControlRow(title: "恢复全部几何默认值", control: resetButton))
-
-        let advancedToggle = NSButton(checkboxWithTitle: "显示高级参数", target: self, action: #selector(toggleAdvanced(_:)))
-        advancedToggle.controlSize = .small
-        self.advancedToggle = advancedToggle
-        rows.append(SettingsControlRow(title: "高级参数", control: advancedToggle))
-
-        return makeSection(title: "面板几何", rows: rows)
+        return rows
     }
 
-    private func makeAdvancedSection() -> NSView {
-        let section = makeSection(title: "高级几何", rows: Tuning.advanced.map { makeTuningRow($0) })
-        section.isHidden = true
-        advancedSection = section
-        return section
+    private func makeAdvancedRows() -> [NSView] {
+        Tuning.advanced.map { makeTuningRow($0) }
     }
 
     private func makeTuningRow(_ spec: TuningSpec) -> SettingsControlRow {
         let control = TuningControl(spec: spec)
-        // 参数变化即重建内嵌预览并刷新全尺寸预览
-        control.onChange = { [weak self] in self?.refreshPreviews() }
+        control.onChange = {
+            // 背后模糊半径是材质层属性、在装配时定死：改了要作废面板的复用缓存
+            if spec.value.key == Tuning.backdropBlurRadius.key { Theme.invalidateBackgrounds() }
+        }
         tuningControls.append(control)
         return SettingsControlRow(title: spec.title, subtitle: spec.subtitle, control: control)
-    }
-
-    @objc private func toggleAdvanced(_ sender: NSButton) {
-        updateSectionVisibility()
-        updateWindowSize()
     }
 
     @objc private func resetTuning() {
         Tuning.resetAll()
         tuningControls.forEach { $0.refresh() }
-        refreshPreviews()
-    }
-
-    @objc private func previewAppSwitcher() {
-        eventTapManager.startLivePreview(.appSwitcher)
-    }
-
-    @objc private func previewWindowSwitcher() {
-        eventTapManager.startLivePreview(.windowSwitcher)
+        Theme.invalidateBackgrounds()
     }
 
     // MARK: - 开机自启动
@@ -490,26 +441,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         #endif
-    }
-
-    private static func segmentIndex(for mode: GlassMode) -> Int {
-        switch mode {
-        case .regular: return 0
-        case .clear: return 1
-        case .off: return 2
-        }
-    }
-
-    @objc private func glassModeChanged(_ sender: NSSegmentedControl) {
-        let mode: GlassMode
-        switch sender.selectedSegment {
-        case 1: mode = .clear
-        case 2: mode = .off
-        default: mode = .regular
-        }
-        Settings.glassMode = mode
-        // 面板每次显示都会重建背景；设置窗口本身也要跟上，否则要重启应用才变
-        rebuildBackground()
     }
 
     private func applyLoginItemState(_ state: LoginItemState) {
@@ -605,18 +536,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshFromSources() {
         delayedPanelSwitch.state = Settings.delayedPanel ? .on : .off
-        glassModeControl.selectedSegment = Self.segmentIndex(for: Settings.glassMode)
-        glassBlurControl.refresh()
+        panelTintControl.refresh()
+        panelAlphaControl.refresh()
         diagLogSwitch.state = DiagLog.isEnabled ? .on : .off
         autoUpdateSwitch.state = updaterManager.automaticallyChecksForUpdates ? .on : .off
         betaChannelSwitch.state = Settings.betaChannel ? .on : .off
         tuningControls.forEach { $0.refresh() }
-        previewViews.forEach { $0.rebuild() }
         refreshLoginItemRow()
         refreshShortcutRows()
     }
 
     // MARK: - 分组布局与行组件
+
+    /// 面板背景滑杆：改动后设置窗口自身背景立即重建；
+    /// 两个切换面板靠 Theme.backgroundGeneration 判断复用缓存作废，下次显示时重建材质层
+    private func makePanelSlider(read: @escaping () -> Double,
+                                 write: @escaping (Double) -> Void) -> PercentSliderControl {
+        let control = PercentSliderControl(read: read, write: write)
+        control.onChange = { [weak self] in self?.rebuildBackground() }
+        return control
+    }
 
     private func makeSwitch(isOn: Bool, onChange: @escaping (Bool) -> Void) -> NSSwitch {
         let toggle = NSSwitch()
@@ -828,12 +767,18 @@ private final class TuningControl: NSView {
 
 /// 垫层强度控件：0–100% 滑杆 + 百分比数值；0% 即关闭（Theme 不装配垫层）。
 /// 拖动期间连续写 UserDefaults，onChange 由设置窗口重建自身背景即时呈现
-private final class GlassBlurControl: NSView {
+/// 百分比滑杆（0…1 的偏好值，显示为 0–100%）：玻璃垫层强度、玻璃着色量共用。
+/// 读写用闭包注入，同一个控件类服务多个偏好项
+private final class PercentSliderControl: NSView {
     var onChange: (() -> Void)?
     private let slider = NSSlider()
     private let valueLabel = NSTextField(labelWithString: "")
+    private let read: () -> Double
+    private let write: (Double) -> Void
 
-    init() {
+    init(read: @escaping () -> Double, write: @escaping (Double) -> Void) {
+        self.read = read
+        self.write = write
         super.init(frame: .zero)
 
         slider.minValue = 0
@@ -870,13 +815,13 @@ private final class GlassBlurControl: NSView {
 
     /// 从存储重读并回写控件（refreshFromSources 调用；偏好可能被旧键迁移等外部因素改动）
     func refresh() {
-        let strength = Settings.glassUnderBlurStrength
-        slider.doubleValue = strength
-        valueLabel.stringValue = "\(Int((strength * 100).rounded()))%"
+        let value = read()
+        slider.doubleValue = value
+        valueLabel.stringValue = "\(Int((value * 100).rounded()))%"
     }
 
     @objc private func sliderChanged() {
-        Settings.glassUnderBlurStrength = slider.doubleValue
+        write(slider.doubleValue)
         refresh()
         onChange?()
     }

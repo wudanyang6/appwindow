@@ -26,8 +26,9 @@ struct SwitcherApp {
 }
 
 /// 应用图标缓存：按 pid 缓存同一个 NSImage 对象，避免每次渲染重新取用/解码。
-/// 只在**一次切换会话内**有效（会话结束调用 clear 清空），因此应用换了图标下次打开即刷新；
-/// 只在主线程访问（切换器构建与渲染都在主线程），无需加锁
+/// **跨会话保留**：取一次约 1.4ms/应用，一轮十几个应用就是几十毫秒，全落在面板首帧上，
+/// 每次会话清空会让这段开销反复出现。应用退出时由终止通知清掉对应条目
+/// （pid 会被复用，不清会取到上一个应用的图标）；运行中换图标的极端情况要到它重启才刷新
 enum AppIconCache {
     private static var cache: [pid_t: NSImage] = [:]
 
@@ -39,9 +40,9 @@ enum AppIconCache {
         return image
     }
 
-    /// 切换会话结束时清空：下次打开面板重新取用各应用当前图标
-    static func clear() {
-        cache.removeAll()
+    /// 应用退出时清掉对应条目
+    static func remove(pid: pid_t) {
+        cache.removeValue(forKey: pid)
     }
 }
 

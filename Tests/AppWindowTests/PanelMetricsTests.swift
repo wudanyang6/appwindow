@@ -27,11 +27,11 @@ final class PanelMetricsTests: XCTestCase {
     }
 
     func testIconSlotSizeClamps() {
-        // 默认配置：应用少时封顶 154
-        XCTAssertEqual(SwitcherMetrics.iconSlotSize(count: 3, availableWidth: 1000), 154)
+        // 默认配置：应用少时封顶 90（系统校准后的槽位尺寸）
+        XCTAssertEqual(SwitcherMetrics.iconSlotSize(count: 3, availableWidth: 1000), 90)
         // 应用多时按宽度均分缩小
         let many = SwitcherMetrics.iconSlotSize(count: 40, availableWidth: 1000)
-        XCTAssertLessThan(many, 154)
+        XCTAssertLessThan(many, 90)
         XCTAssertGreaterThan(many, 0)
         // 配置下限生效
         Tuning.iconSizeMin.store(40)
@@ -43,9 +43,9 @@ final class PanelMetricsTests: XCTestCase {
     }
 
     func testBadgeHeightScalesWithConfiguredMax() {
-        // 默认 iconSizeMax = 154 时与改造前逐像素一致
-        XCTAssertEqual(SwitcherMetrics.badgeHeight(forIconSize: 154), 48)
-        XCTAssertEqual(SwitcherMetrics.badgeHeight(forIconSize: 77), 24)
+        // 默认 iconSizeMax = 90：满槽 48、半槽到下限 24、更小夹住
+        XCTAssertEqual(SwitcherMetrics.badgeHeight(forIconSize: 90), 48)
+        XCTAssertEqual(SwitcherMetrics.badgeHeight(forIconSize: 45), 24)
         XCTAssertEqual(SwitcherMetrics.badgeHeight(forIconSize: 30), 24)
         // 基准跟随配置的最大尺寸
         Tuning.iconSizeMax.store(100)

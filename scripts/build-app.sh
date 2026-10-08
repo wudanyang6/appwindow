@@ -53,6 +53,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppSleepDisabled</key>
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAccessibilityUsageDescription</key>

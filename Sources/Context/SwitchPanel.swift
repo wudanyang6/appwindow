@@ -36,13 +36,12 @@ final class SwitchPanel {
     private let listScroller = ListScrollController()
     private var arrowsPerScreen: [(up: NSImageView, down: NSImageView)] = []
 
-    /// 显示面板并高亮 initialSelected 对应的行。
-    /// onHover 在鼠标悬停行时回调（面板内部已同步视觉高亮），调用方负责同步自己的光标状态。
-    func show(items: [WindowItem], appIcon: NSImage?,
-              selected initialSelected: Int,
-              onPick: @escaping (Int) -> Void,
-              onHover: @escaping (Int) -> Void,
-              makeKey: Bool = true) {
+    /// 构建面板（建窗 + 渲染），但不显示；与 present 拆开，理由同 AppSwitcherPanel：
+    /// 构建耗时藏进「延迟显示面板」的等待里
+    func prepare(items: [WindowItem], appIcon: NSImage?,
+                 selected initialSelected: Int,
+                 onPick: @escaping (Int) -> Void,
+                 onHover: @escaping (Int) -> Void) {
         dismiss()
 
         self.items = items
@@ -58,13 +57,24 @@ final class SwitchPanel {
         var scrollContents: [NSView] = []
         var allArrows: [(up: NSImageView, down: NSImageView)] = []
 
-        for screen in NSScreen.screens {
-            let panel = NonKeyPanel(contentRect: .zero,
+        // 复用上次会话留下的面板窗口；屏幕数变化则销毁重建
+        if !panels.isEmpty, panels.count != NSScreen.screens.count {
+            panels.forEach { $0.close() }
+            panels = []
+        }
+        for (screenIndex, screen) in NSScreen.screens.enumerated() {
+            let panel: NonKeyPanel
+            if panels.indices.contains(screenIndex) {
+                panel = panels[screenIndex]
+            } else {
+                panel = NonKeyPanel(contentRect: .zero,
                                     styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered,
                                     defer: false)
-            panel.identifier = NSUserInterfaceItemIdentifier("switch-\(panels.count)")
-            configure(panel)
+                panel.identifier = NSUserInterfaceItemIdentifier("switch-\(screenIndex)")
+                configure(panel)
+                panels.append(panel)
+            }
 
             let (_, rows, scrollContent, arrows) = buildScreenContent(
                 screen: screen, panel: panel, items: items, appIcon: appIcon,
@@ -72,7 +82,6 @@ final class SwitchPanel {
                 hoverGate: hoverGate, onHover: onHover
             )
 
-            panels.append(panel)
             allRows.append(rows)
             scrollContents.append(scrollContent)
             allArrows.append(arrows)
@@ -84,6 +93,11 @@ final class SwitchPanel {
         listScroller.attach(contents: scrollContents, rowHeight: PanelMetrics.rowHeight,
                             total: items.count, shown: shownCount)
         updateScrollArrows()
+    }
+
+    /// 上屏。prepare 之后调用；到点前会话已结束时面板已清空，此处自然 no-op
+    func present(makeKey: Bool = true) {
+        guard !panels.isEmpty else { return }
 
         panels.forEach { $0.orderFrontRegardless() }
         // 首屏面板成 key，其他屏由 hover 激活（单 key 窗口模型，同 AppSwitcherPanel）；
@@ -111,14 +125,13 @@ final class SwitchPanel {
         listScroller.scroll(by: delta)
     }
 
+    /// 收起面板：同 AppSwitcherPanel，窗口保留不销毁（新窗口首次上屏要走 surface/阴影冷路径）
     func dismiss() {
         panels.forEach { $0.orderOut(nil) }
-        panels = []
         rowViewsPerScreen = []
         arrowsPerScreen = []
         items = []
         onPick = nil
-        NonKeyPanel.forceCloseVisible(prefix: "switch-")
     }
 
     private func pickRow(at index: Int) {
@@ -134,7 +147,8 @@ private extension SwitchPanel {
         panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // 不开窗口投影：面板靠玻璃自身的高光边与背景分层（对齐系统切换器观感，用户指定）
+        panel.hasShadow = false
         // 应用常驻后台，若响应 deactivate 收起会把面板立刻关掉
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
@@ -239,9 +253,13 @@ final class NonKeyPanel: NSPanel {
     /// dismiss 里同步调用：此刻本会话面板已 orderOut（isVisible=false，不误伤），
     /// 只有真正滞留在屏的才被 close 摘除，因此不会累积；show 先 dismiss 再建新面板，
     /// 新面板在本方法返回后才创建，也不会被扫到。
-    static func forceCloseVisible(prefix: String) {
+    /// kept 里的面板是调用方自持、跨会话复用的：即使此刻仍可见（orderOut 未即时生效）
+    /// 也不能 close —— 清掉后自持数组里留下的是已关闭窗口，下次复用就上不了屏
+    static func forceCloseVisible(prefix: String, excluding kept: [NonKeyPanel] = []) {
+        let keptIDs = Set(kept.map(ObjectIdentifier.init))
         let ghosts = NSApp.windows.compactMap { $0 as? NonKeyPanel }
-            .filter { $0.identifier?.rawValue.hasPrefix(prefix) == true && $0.isVisible }
+            .filter { $0.identifier?.rawValue.hasPrefix(prefix) == true && $0.isVisible
+                && !keptIDs.contains(ObjectIdentifier($0)) }
         guard !ghosts.isEmpty else { return }
         ghosts.forEach {
             $0.orderOut(nil)

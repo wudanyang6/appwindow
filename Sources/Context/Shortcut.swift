@@ -7,15 +7,23 @@ import Carbon.HIToolbox
 struct Shortcut: Hashable {
     var keyCode: UInt16
     var modifiers: CGEventFlags
+    /// 停用：设置里点「删除」后的状态——不参与任何匹配，等于不使用这个快捷键。
+    /// 键位本身仍留在 UserDefaults 里，重新录制或「恢复默认」即可回到可用状态
+    var isDisabled = false
+
+    /// 停用态哨兵：keyCode 0 不是合法键位，只作为占位
+    static let disabled = Shortcut(keyCode: 0, modifiers: [], isDisabled: true)
 
     // CGEventFlags（OptionSet）未合成 Hashable，手工按 rawValue 实现（冲突检测需要 Set 去重）
     static func == (lhs: Shortcut, rhs: Shortcut) -> Bool {
         lhs.keyCode == rhs.keyCode && lhs.modifiers == rhs.modifiers
+            && lhs.isDisabled == rhs.isDisabled
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(keyCode)
         hasher.combine(modifiers.rawValue)
+        hasher.combine(isDisabled)
     }
 
     /// 只认四类修饰键；caps lock / fn / 小键盘位一律忽略
@@ -35,12 +43,13 @@ struct Shortcut: Hashable {
     /// 入口匹配：修饰键必须完全一致（多余的 Opt/Ctrl 不算命中，
     /// 否则两个触发键的修饰组合会互相吞并）
     func matchesEntry(keyCode: UInt16, flags: CGEventFlags) -> Bool {
-        self.keyCode == keyCode && flags.intersection(Self.modifierMask) == modifiers
+        !isDisabled && self.keyCode == keyCode && flags.intersection(Self.modifierMask) == modifiers
     }
 
     /// 模式内匹配：基础修饰键仍按住即可，允许额外修饰键
     func matchesInMode(keyCode: UInt16, flags: CGEventFlags) -> Bool {
-        self.keyCode == keyCode && flags.intersection(Self.modifierMask).isSuperset(of: modifiers)
+        !isDisabled && self.keyCode == keyCode
+            && flags.intersection(Self.modifierMask).isSuperset(of: modifiers)
     }
 
     /// 反向 = 基础修饰键 + Shift；基础键含 Shift 会被校验拒绝，因此反向始终无歧义
@@ -56,6 +65,7 @@ struct Shortcut: Hashable {
     /// 裸字母/数字/标点会被 tap 全局吞掉（等于全局禁用该键），裸 Tab/Space/方向键破坏输入，
     /// 一律拒绝；功能键不参与文本输入，可安全无修饰
     var validationError: ShortcutValidationError? {
+        if isDisabled { return nil }
         if modifiers.contains(.maskShift) { return .shiftInBase }
         if keyCode == UInt16(kVK_Escape) { return .reservedKey }
         if modifiers.isEmpty && !isFunctionKey { return .missingModifier }
@@ -64,6 +74,7 @@ struct Shortcut: Hashable {
 
     /// 显示串：修饰键按 ⌃⌥⇧⌘ 顺序 + 键名
     var displayString: String {
+        if isDisabled { return "未设置" }
         var result = ""
         if modifiers.contains(.maskControl) { result += "⌃" }
         if modifiers.contains(.maskAlternate) { result += "⌥" }
@@ -193,6 +204,8 @@ struct ShortcutConfiguration: Equatable {
     func validate() -> ShortcutValidationError? {
         if let error = appSwitcher.validationError { return error }
         if let error = windowSwitcher.validationError { return error }
+        // 任一停用则不存在跨键冲突（停用项不参与匹配）
+        if appSwitcher.isDisabled || windowSwitcher.isDisabled { return nil }
         // 模式内按 keyCode 分派，同键不同修饰会产生歧义
         if appSwitcher.keyCode == windowSwitcher.keyCode { return .sameKeyCode }
         // 四个和弦（各自正向/反向）不得重复；当前 shiftInBase 规则下不可达，留作防御
@@ -211,11 +224,13 @@ enum ShortcutStore {
 
     private static let appKeyCodeKey = "shortcutAppKeyCode"
     private static let appModifiersKey = "shortcutAppModifiers"
+    private static let appDisabledKey = "shortcutAppDisabled"
     private static let windowKeyCodeKey = "shortcutWindowKeyCode"
     private static let windowModifiersKey = "shortcutWindowModifiers"
+    private static let windowDisabledKey = "shortcutWindowDisabled"
 
     static func configuration(defaults: UserDefaults = .standard) -> ShortcutConfiguration {
-        let configuration = ShortcutConfiguration(
+        var configuration = ShortcutConfiguration(
             appSwitcher: load(
                 keyCodeKey: appKeyCodeKey, modifiersKey: appModifiersKey,
                 fallback: .defaultAppSwitcher, defaults: defaults
@@ -225,6 +240,9 @@ enum ShortcutStore {
                 fallback: .defaultWindowSwitcher, defaults: defaults
             )
         )
+        // 停用态：键位照旧读出来，但配置层标记停用（不参与匹配）；重新录制或恢复默认即可解除
+        if defaults.bool(forKey: appDisabledKey) { configuration.appSwitcher = .disabled }
+        if defaults.bool(forKey: windowDisabledKey) { configuration.windowSwitcher = .disabled }
         // 单项合法但相互冲突（同键/和弦重复）的损坏组合整体回退默认，避免快捷键静默失效
         if configuration.validate() == nil {
             return configuration
@@ -234,12 +252,19 @@ enum ShortcutStore {
 
     static func set(_ shortcut: Shortcut, for target: Target, defaults: UserDefaults = .standard) {
         let keys = keys(for: target)
+        // 停用只翻标记位：键位留在原处，解除停用（重新录制）前不会丢
+        guard !shortcut.isDisabled else {
+            defaults.set(true, forKey: keys.disabledKey)
+            return
+        }
         defaults.set(Int(shortcut.keyCode), forKey: keys.keyCodeKey)
         defaults.set(Int(shortcut.modifiers.rawValue), forKey: keys.modifiersKey)
+        defaults.set(false, forKey: keys.disabledKey)
     }
 
     static func resetToDefaults(defaults: UserDefaults = .standard) {
-        for key in [appKeyCodeKey, appModifiersKey, windowKeyCodeKey, windowModifiersKey] {
+        for key in [appKeyCodeKey, appModifiersKey, appDisabledKey,
+                    windowKeyCodeKey, windowModifiersKey, windowDisabledKey] {
             defaults.removeObject(forKey: key)
         }
     }
@@ -265,12 +290,13 @@ enum ShortcutStore {
         return shortcut
     }
 
-    private static func keys(for target: Target) -> (keyCodeKey: String, modifiersKey: String) {
+    private static func keys(for target: Target)
+        -> (keyCodeKey: String, modifiersKey: String, disabledKey: String) {
         switch target {
         case .appSwitcher:
-            return (appKeyCodeKey, appModifiersKey)
+            return (appKeyCodeKey, appModifiersKey, appDisabledKey)
         case .windowSwitcher:
-            return (windowKeyCodeKey, windowModifiersKey)
+            return (windowKeyCodeKey, windowModifiersKey, windowDisabledKey)
         }
     }
 }

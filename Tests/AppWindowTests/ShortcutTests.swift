@@ -105,6 +105,56 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    // MARK: - 停用（设置里点「删除」）
+
+    /// 停用态：不参与入口/模式匹配，校验放行，显示为「未设置」
+    func testDisabledShortcutNeverMatches() {
+        let disabled = Shortcut.disabled
+        XCTAssertTrue(disabled.isDisabled)
+        XCTAssertFalse(disabled.matchesEntry(keyCode: disabled.keyCode, flags: disabled.modifiers))
+        XCTAssertFalse(disabled.matchesEntry(keyCode: UInt16(kVK_Tab), flags: .maskCommand),
+                       "停用后任何按键都不应命中")
+        XCTAssertFalse(disabled.matchesInMode(keyCode: UInt16(kVK_Tab), flags: .maskCommand))
+        XCTAssertNil(disabled.validationError, "停用是合法状态，不该报「缺少修饰键」")
+        XCTAssertEqual(disabled.displayString, "未设置")
+    }
+
+    /// 任一项停用就不存在跨键冲突：停用项不参与匹配，也不会挡着另一项
+    func testDisabledEntrySkipsConflictChecks() {
+        let configuration = ShortcutConfiguration(
+            appSwitcher: .disabled,
+            windowSwitcher: .defaultWindowSwitcher
+        )
+        XCTAssertNil(configuration.validate(), "停用项不该与另一项判冲突")
+
+        let bothDisabled = ShortcutConfiguration(appSwitcher: .disabled, windowSwitcher: .disabled)
+        XCTAssertNil(bothDisabled.validate(), "两项都停用也是合法配置")
+    }
+
+    /// 持久化：停用只翻标记位（键位保留），重新录制即解除；恢复默认回到默认键位
+    func testStorePersistsDisabledFlag() {
+        let suiteName = "ShortcutTests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("无法创建测试用 UserDefaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        ShortcutStore.set(.disabled, for: .appSwitcher, defaults: defaults)
+        XCTAssertTrue(ShortcutStore.configuration(defaults: defaults).appSwitcher.isDisabled)
+        XCTAssertFalse(ShortcutStore.configuration(defaults: defaults).windowSwitcher.isDisabled,
+                       "停用只影响目标项")
+
+        // 重新录制：解除停用并落新键位
+        let recorded = Shortcut(keyCode: UInt16(kVK_F6), modifiers: [])
+        ShortcutStore.set(recorded, for: .appSwitcher, defaults: defaults)
+        XCTAssertEqual(ShortcutStore.configuration(defaults: defaults).appSwitcher, recorded)
+
+        // 恢复默认：回到默认键位且可用
+        ShortcutStore.set(.disabled, for: .appSwitcher, defaults: defaults)
+        ShortcutStore.resetToDefaults(defaults: defaults)
+        XCTAssertEqual(ShortcutStore.configuration(defaults: defaults).appSwitcher, .defaultAppSwitcher)
+    }
+
     // MARK: - 持久化
 
     func testStoreRoundTripAndFallbacks() {

@@ -201,7 +201,8 @@ final class ShortcutRecorderView: NSControl {
     private func updateAppearance() {
         // 录制中不覆盖实时预览（捕获成功后等待 keyUp 期间由 onFinished 统一复位）
         guard !isRecording else { return }
-        if !recordingEnabled {
+        // 未授权录制、或该快捷键已停用（设置里点过「删除」）：都显示为灰态
+        if !recordingEnabled || shortcut.isDisabled {
             layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
             valueLabel.textColor = .tertiaryLabelColor
         } else {
