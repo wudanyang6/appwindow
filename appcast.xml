@@ -6,6 +6,19 @@
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
     <item>
+      <title>0.9.0-beta.3（构建 15）</title>
+      <pubDate>Thu, 08 Oct 2026 04:29:38 +0000</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>0.9.0-beta.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <description><![CDATA[<ul><li>fix(switcher): 暗色模式高亮自适应 + 排除 WindowManager 系统代理</li><li>Update appcast for v0.9.0-beta.2 (build 14)</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.9.0-beta.3/AppWindow-0.9.0-beta.3.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="O1j6t+K/3calcH2FdfZZp+DtMHKCmstMu0XvjM5IS97UnnPCvJjCeTgC0mTKtu84dmqzIfseJMqdOc/fdfoODw=="
+                 length="1959710" />
+    </item>
+    <item>
       <title>0.9.0-beta.2（构建 14）</title>
       <pubDate>Tue, 06 Oct 2026 17:01:30 +0000</pubDate>
       <sparkle:version>14</sparkle:version>
