@@ -519,6 +519,7 @@ private extension AppSwitcherPanel {
         if let cached, cached.count == apps.count {
             for (index, slotView) in cached.enumerated() {
                 slotView.frame = slotFrame(index)
+                slotView.setHoverGate(hoverGate)
                 // 图标要跟着刷新：槽位跨会话复用，应用重启/换图标后图像对象会换，
                 // 不更新就一直是首次构建时那张（表现为「图标不更新」）
                 slotView.setIcon(apps[index].icon)
@@ -726,7 +727,7 @@ private final class BadgeOverlayView: NSView {
 private final class IconSlotView: NSView {
 
     private let index: Int
-    private let hoverGate: MouseHoverGate
+    private var hoverGate: MouseHoverGate
     private let onHover: (Int) -> Void
     private let onClick: (Int) -> Void
     private let iconView: NSImageView
@@ -795,6 +796,13 @@ private final class IconSlotView: NSView {
 
     /// 当前槽位边长：图标视图尺寸、角标尺寸等内部几何都由它决定，复用槽位时用它判断几何是否变了
     var slotSide: CGFloat { slotSize }
+
+    /// 更新 hover 闸门：闸门是**每会话**新建的（锚点 = 会话开始时的光标位置），
+    /// 槽位跨会话复用时必须换成当前会话那个——沿用上一会话的闸门会把「光标没动」
+    /// 判成移动（锚点是老位置），表现为面板一出现高亮就跳到光标下的图标
+    func setHoverGate(_ gate: MouseHoverGate) {
+        hoverGate = gate
+    }
 
     /// 更新图标：复用槽位时应用可能换了图标（重启、换主题图标），图像对象不同才赋值（避免无谓重绘）
     func setIcon(_ image: NSImage?) {
