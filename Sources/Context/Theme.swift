@@ -119,6 +119,30 @@ enum Theme {
         return host
     }
 
+    /// 切换器「选中图标」高亮配色，按外观取分支：
+    /// - 浅色模式：50% 中灰填充 + 灰描边（浅托盘上偏深、清晰可见）
+    /// - 暗色模式：白色填充、**无描边**（描边比填充更亮、会读成白圈——实测反馈去掉）
+    /// 返回具体色（非动态色）：图层颜色不随外观自动重解析，调用方按当前外观取一次即可，
+    /// 面板每次显示都会重渲染
+    static func switcherHighlightColors(for appearance: NSAppearance) -> (fill: NSColor, border: NSColor?) {
+        isDark(appearance)
+            ? (NSColor.white.withAlphaComponent(0.28), nil)
+            : (NSColor.gray.withAlphaComponent(0.42), NSColor.gray.withAlphaComponent(0.55))
+    }
+
+    /// 窗口列表「选中行」高亮配色，按外观取分支：
+    /// - 浅色模式：黑 20%（暗色块）
+    /// - 暗色模式：白 18%（黑块在暗托盘上不可见）
+    static func windowRowHighlightColor(for appearance: NSAppearance) -> NSColor {
+        isDark(appearance)
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.black.withAlphaComponent(0.20)
+    }
+
+    private static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
     /// 毛玻璃层：blendingMode 取 behindWindow 才能模糊面板后面的窗口内容。
     /// frame 必须按容器当前 bounds 给：autoresizingMask 只在容器尺寸变化时生效，
     /// 容器尺寸不变时留空 frame 的图层会一直保持 0×0

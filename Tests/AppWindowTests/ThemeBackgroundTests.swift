@@ -50,6 +50,26 @@ final class ThemeBackgroundTests: XCTestCase {
         XCTAssertEqual(Settings.glassUnderBlurStrength, 0.4, accuracy: 0.0001, "新键优先于旧键")
     }
 
+    /// 高亮配色随外观切换：浅色 = 中灰/黑（现状），暗色 = 白（灰色在暗托盘上对比不足）。
+    /// 暗色白值经实测反馈调过两轮：35%/60% 太扎眼 → 28%，随后描边比填充更亮读成白圈 → 去掉描边
+    func testHighlightsAdaptToAppearance() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+
+        let lightPill = Theme.switcherHighlightColors(for: light)
+        let darkPill = Theme.switcherHighlightColors(for: dark)
+        XCTAssertEqual(lightPill.fill.cgColor, NSColor.gray.withAlphaComponent(0.42).cgColor)
+        XCTAssertEqual(lightPill.border?.cgColor, NSColor.gray.withAlphaComponent(0.55).cgColor)
+        XCTAssertEqual(darkPill.fill.cgColor, NSColor.white.withAlphaComponent(0.28).cgColor)
+        XCTAssertNil(darkPill.border, "暗色描边会读成白圈，应去掉")
+        XCTAssertNotEqual(lightPill.fill.cgColor, darkPill.fill.cgColor, "暗色模式应换成对比更高的颜色")
+
+        XCTAssertEqual(Theme.windowRowHighlightColor(for: light).cgColor,
+                       NSColor.black.withAlphaComponent(0.20).cgColor)
+        XCTAssertEqual(Theme.windowRowHighlightColor(for: dark).cgColor,
+                       NSColor.white.withAlphaComponent(0.18).cgColor)
+    }
+
     // MARK: - 内容层与背景层分离（回归）
 
     /// 回归：面板复用容器时「清空 contentHost.subviews 重建内容」不得移除任何背景层。

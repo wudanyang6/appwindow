@@ -700,13 +700,19 @@ private final class IconSlotView: NSView {
     }
 
     func setSelected(_ selected: Bool) {
-        // 选中态：灰色玻璃胶囊（灰色填充 + 灰色描边）；用 50% 灰而非黑/白：
-        // 浅色面板上偏深、深色面板上偏浅，两种模式下都可见。
-        // 填充不透明度按实测反馈调实（28% → 42%）：浅色托盘上更「实」、选中更醒目
+        // 选中态：玻璃胶囊（填充 + 可选描边），配色随外观自适应
+        // （浅色=中灰+灰边、暗色=白+无描边，见 Theme.switcherHighlightColors）；
+        // 视图未入窗时（首建渲染阶段）回退到应用级外观
         if selected {
-            highlightLayer.backgroundColor = NSColor.gray.withAlphaComponent(0.42).cgColor
-            highlightLayer.borderColor = NSColor.gray.withAlphaComponent(0.55).cgColor
-            highlightLayer.borderWidth = 1
+            let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+            let colors = Theme.switcherHighlightColors(for: appearance)
+            highlightLayer.backgroundColor = colors.fill.cgColor
+            if let border = colors.border {
+                highlightLayer.borderColor = border.cgColor
+                highlightLayer.borderWidth = 1
+            } else {
+                highlightLayer.borderWidth = 0
+            }
         } else {
             highlightLayer.backgroundColor = nil
             highlightLayer.borderWidth = 0

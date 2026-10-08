@@ -365,11 +365,15 @@ final class WindowRowView: NSView {
     }
 
     func setHighlighted(_ highlighted: Bool) {
-        // 高亮为透明稍暗的底色（玻璃上的暗色半透明块），文字保持 labelColor
-        // 随系统外观自适应，不再反白
-        highlightLayer.backgroundColor = highlighted
-            ? NSColor.black.withAlphaComponent(0.2).cgColor
-            : nil
+        // 高亮为透明半透明块，颜色随外观取（浅色 = 黑 20%、暗色 = 白 18%，见 Theme）；
+        // 文字保持 labelColor 随系统外观自适应，不再反白。
+        // 视图未入窗时（首建渲染阶段）回退到应用级外观
+        if highlighted {
+            let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+            highlightLayer.backgroundColor = Theme.windowRowHighlightColor(for: appearance).cgColor
+        } else {
+            highlightLayer.backgroundColor = nil
+        }
     }
 
     override func layout() {

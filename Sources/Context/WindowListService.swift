@@ -53,7 +53,7 @@ enum WindowListService {
 
     /// 所有可切换应用，按 CGWindowList 全局 z-order 推导的最近使用顺序排列；
     /// 无可见窗口的应用（最小化/隐藏）沉底。
-    /// 附件应用（本应用的设置窗口、菜单栏工具的窗口）有普通可见窗口时同样入列：
+    /// 附件应用（本应用的设置窗口、第三方菜单栏工具的窗口）有普通可见窗口时同样入列：
     /// 否则打开设置窗口后无法用 cmd+tab 切回；无窗口时不入列，避免切过去没窗口的幽灵条目
     static func switcherApps() -> [SwitcherApp] {
         let visible = allVisibleWindows()
@@ -63,7 +63,8 @@ enum WindowListService {
         let running = NSWorkspace.shared.runningApplications.filter { app in
             shouldList(policy: app.activationPolicy,
                        isTerminated: app.isTerminated,
-                       hasVisibleWindow: visiblePIDs.contains(app.processIdentifier))
+                       hasVisibleWindow: visiblePIDs.contains(app.processIdentifier),
+                       bundleIdentifier: app.bundleIdentifier)
         }
         let byPID = Dictionary(uniqueKeysWithValues: running.map { ($0.processIdentifier, $0) })
 
@@ -79,15 +80,21 @@ enum WindowListService {
         return ordered.map { SwitcherApp(app: $0) }
     }
 
-    /// 是否列入切换器：常规应用始终列入（无窗口时按 z-order 缺失沉底），
-    /// 附件应用仅当有普通可见窗口时列入；prohibited（系统代理类）不列入
+    /// 是否列入切换器：常规应用始终列入（无窗口时按 z-order 缺失沉底）；
+    /// 附件应用有普通可见窗口时列入（本应用设置窗口、第三方工具的窗口）。
+    /// 但系统代理（com.apple.* 的 UIElement 进程，如 WindowManager）不是用户应用、
+    /// 也无法激活，一律不列入——它们名下的「窗口」多是系统覆盖层（平铺手势等），
+    /// 会经 layer-0 可见窗口判定被误收，用户反馈切不过去
     static func shouldList(policy: NSApplication.ActivationPolicy,
                            isTerminated: Bool,
-                           hasVisibleWindow: Bool) -> Bool {
+                           hasVisibleWindow: Bool,
+                           bundleIdentifier: String?) -> Bool {
         guard !isTerminated else { return false }
         switch policy {
         case .regular: return true
-        case .accessory: return hasVisibleWindow
+        case .accessory:
+            if bundleIdentifier?.hasPrefix("com.apple.") == true { return false }
+            return hasVisibleWindow
         default: return false
         }
     }

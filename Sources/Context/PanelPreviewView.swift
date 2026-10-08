@@ -78,6 +78,11 @@ final class PanelPreviewView: NSView {
         .systemFont(ofSize: font.pointSize * Self.scale, weight: .medium)
     }
 
+    /// 取高亮配色用的外观：构建阶段视图未入窗时回退到应用级外观
+    private var resolvedAppearance: NSAppearance {
+        window?.effectiveAppearance ?? NSApp.effectiveAppearance
+    }
+
     // MARK: - Cmd+Tab 应用切换器预览
 
     private func buildAppSwitcherPreview() -> NSSize {
@@ -102,14 +107,17 @@ final class PanelPreviewView: NSView {
         for (index, sample) in samples.enumerated() {
             let x = iconInset + CGFloat(index) * (slot + gap)
             if index == 0 {
-                // 选中高亮：与真实面板同款（灰色玻璃胶囊：灰色填充 + 灰色描边）
+                // 选中高亮：与真实面板同款、同来源（浅色=灰+灰边、暗色=白+无描边）
                 let highlight = NSView(frame: NSRect(x: x, y: bottomPad, width: slot, height: slot))
                 highlight.wantsLayer = true
                 highlight.layer?.cornerRadius = slot * 0.28
                 highlight.layer?.cornerCurve = .continuous
-                highlight.layer?.backgroundColor = NSColor.gray.withAlphaComponent(0.42).cgColor
-                highlight.layer?.borderColor = NSColor.gray.withAlphaComponent(0.55).cgColor
-                highlight.layer?.borderWidth = 1
+                let colors = Theme.switcherHighlightColors(for: resolvedAppearance)
+                highlight.layer?.backgroundColor = colors.fill.cgColor
+                if let border = colors.border {
+                    highlight.layer?.borderColor = border.cgColor
+                    highlight.layer?.borderWidth = 1
+                }
                 iconRowHost.addSubview(highlight)
             }
             let icon = NSImageView(frame: NSRect(x: x, y: bottomPad, width: slot, height: slot))
@@ -185,7 +193,9 @@ final class PanelPreviewView: NSView {
                 ))
                 highlight.wantsLayer = true
                 highlight.layer?.cornerRadius = 4
-                highlight.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.2).cgColor
+                // 行高亮：与真实面板同款、同来源（浅色 = 黑、暗色 = 白）
+                highlight.layer?.backgroundColor = Theme
+                    .windowRowHighlightColor(for: resolvedAppearance).cgColor
                 host.addSubview(highlight)
             }
             let title = NSTextField(labelWithString: "示例窗口 \(index + 1)")
