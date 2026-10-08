@@ -6,6 +6,19 @@
     <description>AppWindow 的更新源，由 CI 在发版时自动维护。</description>
     <language>zh-Hans</language>
     <item>
+      <title>0.9.0-beta.4（构建 16）</title>
+      <pubDate>Thu, 08 Oct 2026 16:13:52 +0000</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>0.9.0-beta.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <description><![CDATA[<ul><li>fix(switcher): 复用槽位时换用当前会话的 hover 闸门</li><li>feat: 面板外观重做 + 设置重构 + 切换与几何修复</li><li>Update appcast for v0.9.0-beta.3 (build 15)</li></ul>]]></description>
+      <enclosure url="https://github.com/wudanyang6/appwindow/releases/download/v0.9.0-beta.4/AppWindow-0.9.0-beta.4.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="FxrE3c53di2MCzZwwXGWDB2RNBzzpNG4kyfDrgN6qzOW41zctYNvxnOys4W53C7Be8Wqv1OzQvcGRmZ00/tgBA=="
+                 length="1955186" />
+    </item>
+    <item>
       <title>0.9.0-beta.3（构建 15）</title>
       <pubDate>Thu, 08 Oct 2026 04:29:38 +0000</pubDate>
       <sparkle:version>15</sparkle:version>
